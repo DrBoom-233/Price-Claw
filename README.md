@@ -68,7 +68,7 @@ OCR service can be changed via the `service_type` parameter of `process_ocr_pric
 
 ---
 
-## � Run Web Client 
+## 🚀 Run Web Client 
 
 We also provide a fully automated, interactive web-based UI. You can upload MHTML pages and watch the extraction process execute step by step in real time.
 
@@ -78,7 +78,7 @@ We also provide a fully automated, interactive web-based UI. You can upload MHTM
 
 ---
 
-## �🔌 Connect to other MCP Clients
+## 🔌 Connect to other MCP Clients
 
 Create an `MCP.json` to register this server with an MCP-compatible client:
 
