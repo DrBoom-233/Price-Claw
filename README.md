@@ -68,7 +68,17 @@ OCR service can be changed via the `service_type` parameter of `process_ocr_pric
 
 ---
 
-## 🔌 Connect to MCP Clients
+## � Run Web Client 
+
+We also provide a fully automated, interactive web-based UI. You can upload MHTML pages and watch the extraction process execute step by step in real time.
+
+1. Run `uv run python client.py` in your terminal.
+2. Open your browser and go to `http://localhost:8000`
+3. Upload your `.mhtml` file, customize the string query if needed, and start extraction!
+
+---
+
+## �🔌 Connect to other MCP Clients
 
 Create an `MCP.json` to register this server with an MCP-compatible client:
 

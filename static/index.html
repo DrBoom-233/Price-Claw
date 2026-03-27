@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Extraction Client</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f9fafb; display: flex; flex-direction: column; gap: 1.5rem; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        h1, h2 { margin-top: 0; color: #111827; }
+        .form-group { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+        button { background: #3b82f6; color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 1rem; }
+        button:hover { background: #2563eb; }
+        button:disabled { background: #9ca3af; cursor: not-allowed; }
+        #console { background: #1f2937; color: #a5b4fc; padding: 1rem; border-radius: 6px; font-family: monospace; height: 300px; overflow-y: auto; white-space: pre-wrap; font-size: 0.9rem; }
+        .log-info { color: #d1d5db; }
+        .log-success { color: #4ade80; }
+        .log-error { color: #f87171; }
+        .log-ws { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>MCP Extraction Client</h1>
+        <p>Upload an MHTML file of a product page, then start the automated extraction process.</p>
+        <div class="form-group">
+            <input type="file" id="fileInput" accept=".mhtml" />
+            <button id="uploadBtn">1. Upload File</button>
+        </div>
+        <div id="uploadStatus"></div>
+        <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 1.5rem 0;" />
+        <div class="form-group" style="align-items: flex-start; flex-direction: column;">
+            <label for="extractionRequest" style="font-weight: 500; font-size: 0.95rem;">Extraction Request (Natural Language):</label>
+            <textarea id="extractionRequest" rows="3" style="width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 0.5rem; font-family: inherit; font-size: 0.95rem; resize: vertical;" placeholder="e.g., I want to extract all product names and prices">I want to extract all product names and prices</textarea>
+        </div>
+        <div class="form-group">
+            <button id="startBtn" disabled>2. Start Extraction Task</button>
+        </div>
+    </div>
+    <div class="card">
+        <h2>Task Console</h2>
+        <div id="console">System ready. Please upload a file first.</div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const startBtn = document.getElementById('startBtn');
+        const extractionRequestInput = document.getElementById('extractionRequest');
+        const consoleEl = document.getElementById('console');
+        const uploadStatus = document.getElementById('uploadStatus');
+        let currentFilename = '';
+
+        function log(message, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const span = document.createElement('div');
+            span.className = `log-${type}`;
+            span.textContent = `[${time}] ${message}`;
+            consoleEl.appendChild(span);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!fileInput.files[0]) {
+                log('Error: Please select a file first!', 'error');
+                return;
+            }
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            log(`Starting upload: ${file.name}`, 'info');
+            uploadBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    log(`Upload successful: ${result.filename}`, 'success');
+                    uploadStatus.textContent = `Uploaded: ${result.filename}`;
+                    uploadStatus.style.color = '#10b981';
+                    currentFilename = result.filename;
+                    startBtn.disabled = false;
+                } else {
+                    throw new Error(result.detail || 'Upload failed');
+                }
+            } catch (err) {
+                log(`Upload error: ${err.message}`, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        });
+
+        startBtn.addEventListener('click', () => {
+            log('Connecting to MCP task server...', 'ws');
+            startBtn.disabled = true;
+            fileInput.disabled = true;
+            uploadBtn.disabled = true;
+            extractionRequestInput.disabled = true;
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+
+            ws.onopen = () => {
+                log('Connection successful, starting tool chain execution', 'success');
+                const requestText = extractionRequestInput.value.trim() || "I want to extract all product names and prices";
+                ws.send(JSON.stringify({ 
+                    action: 'start', 
+                    filename: currentFilename,
+                    extraction_request: requestText 
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                switch(data.type) {
+                    case 'log':
+                        log(data.message, 'info');
+                        break;
+                    case 'progress':
+                        log(`[Executing] ${data.step}`, 'ws');
+                        break;
+                    case 'step_done':
+                        log(`[Completed] ${data.step}`, 'success');
+                        if (data.data) {
+                            log(`  Returned data: ${JSON.stringify(data.data)}`, 'info');
+                        }
+                        break;
+                    case 'result':
+                        log(`[Final Result]\n${JSON.stringify(data.data, null, 2)}`, 'success');
+                        break;
+                    case 'error':
+                        log(`[Step Error] ${data.message}`, 'error');
+                        break;
+                    case 'fatal':
+                        log(`[Fatal Error] ${data.message}`, 'error');
+                        ws.close();
+                        break;
+                    case 'complete':
+                        log('🎉 Extraction task completed successfully!', 'success');
+                        ws.close();
+                        break;
+                }
+            };
+
+            ws.onclose = () => {
+                log('Connection closed. You can re-upload or try again.', 'ws');
+                resetUI();
+            };
+
+            ws.onerror = (err) => {
+                log(`WebSocket connection error`, 'error');
+                resetUI();
+            };
+        });
+
+        function resetUI() {
+            startBtn.disabled = false;
+            fileInput.disabled = false;
+            uploadBtn.disabled = false;
+            extractionRequestInput.disabled = false;
+        }
+    </script>
+</body>
+</html>
