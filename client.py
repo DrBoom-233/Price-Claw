@@ -1,146 +1,271 @@
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
-import shutil
-import os
-from pathlib import Path
-from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp import ClientSession
+from __future__ import annotations
+
 import json
-import asyncio
+import shutil
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-app = FastAPI()
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from playwright.async_api import Browser, async_playwright
 
-# Mount static folder
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from app_settings import (
+    apply_runtime_settings,
+    get_runtime_settings,
+    get_settings_public_view,
+    save_runtime_settings,
+)
+from pipeline_service import (
+    build_extraction_schema,
+    capture_mhtml_screenshots,
+    process_product_names,
+    process_product_prices,
+    run_extraction_with_schema,
+)
+
 
 MHTML_DIR = Path("mhtml_output")
 PRICE_INFO_DIR = Path("price_info_output")
 PUBLIC_DIR = Path("public")
 
-# Ensure required directories exist
-for d in [MHTML_DIR, PRICE_INFO_DIR, PUBLIC_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+
+class SettingsPayload(BaseModel):
+    apiKey: str
+    model: str | None = None
+    reasoningModel: str | None = None
+
+
+class WsContext:
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+
+    async def _send(self, level: str, msg: str) -> None:
+        await self.websocket.send_json(
+            {"type": "log", "level": level, "message": str(msg)}
+        )
+
+    async def info(self, msg: str) -> None:
+        await self._send("info", msg)
+
+    async def warning(self, msg: str) -> None:
+        await self._send("warning", msg)
+
+    async def error(self, msg: str) -> None:
+        await self._send("error", msg)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    for directory in (MHTML_DIR, PRICE_INFO_DIR, PUBLIC_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    settings = get_runtime_settings()
+    if settings:
+        apply_runtime_settings(settings)
+
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(headless=True)
+    app.state.playwright = playwright
+    app.state.browser = browser
+
+    try:
+        yield
+    finally:
+        await browser.close()
+        await playwright.stop()
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 def read_root():
-    return FileResponse("static/index.html")
+    return {
+        "service": "Price Claw FastAPI backend",
+        "status": "ok",
+        "health": "/api/health",
+    }
+
+
+@app.get("/api/health")
+def get_health():
+    return {"ok": True}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return get_settings_public_view()
+
+
+@app.post("/api/settings")
+def save_settings(payload: SettingsPayload):
+    api_key = payload.apiKey.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="apiKey is required")
+
+    save_runtime_settings(
+        api_key=api_key,
+        model=payload.model,
+        reasoning_model=payload.reasoningModel,
+    )
+    view = get_settings_public_view()
+    view["message"] = "Settings saved"
+    return view
+
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
-    if not file.filename.endswith(".mhtml"):
+    if not file.filename or not file.filename.endswith(".mhtml"):
         raise HTTPException(status_code=400, detail="Only .mhtml files are allowed")
 
-    # Clear existing mhtml files to avoid clutter/pollution
-    for f in MHTML_DIR.glob("*.mhtml"):
-        f.unlink()
+    for old_file in MHTML_DIR.glob("*.mhtml"):
+        old_file.unlink()
 
     file_path = MHTML_DIR / file.filename
-    with open(file_path, "wb") as buffer:
+    with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
+
     return {"filename": file.filename, "message": "Upload successful"}
 
-async def run_mcp_pipeline(websocket: WebSocket, filename: str, extraction_request: str):
-    server_params = StdioServerParameters(
-        command="uv",
-        args=["run", "python", "server.py"],
-        env=os.environ.copy()
-    )
+
+async def run_pipeline(
+    websocket: WebSocket,
+    extraction_request: str,
+    browser: Browser,
+) -> None:
+    settings = get_runtime_settings()
+    if not settings:
+        await websocket.send_json(
+            {
+                "type": "fatal",
+                "message": "OpenAI API key is not configured. Please save it in Settings first.",
+            }
+        )
+        return
+
+    apply_runtime_settings(settings)
+    ctx = WsContext(websocket)
+    await websocket.send_json({"type": "log", "message": "Extraction pipeline started"})
 
     try:
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                await websocket.send_json({"type": "log", "message": "MCP Server Initialized"})
+        await websocket.send_json(
+            {"type": "progress", "step": "Taking screenshots (screenshot_step)"}
+        )
+        screenshot_result = await capture_mhtml_screenshots(browser, ctx)
+        await websocket.send_json(
+            {
+                "type": "step_done",
+                "step": "screenshot_step",
+                "data": screenshot_result,
+            }
+        )
 
-                # Step 1: screenshot_tool
-                await websocket.send_json({"type": "progress", "step": "Taking screenshots (screenshot_tool) ..."})
-                result = await session.call_tool("screenshot_tool", {})
-                await websocket.send_json({
-                    "type": "step_done", 
-                    "step": "screenshot_tool",
-                    "data": json.loads(result.content[0].text) if result.content else "No Output"
-                })
+        await websocket.send_json(
+            {
+                "type": "progress",
+                "step": "Processing product names (name_processing_step)",
+            }
+        )
+        name_result = await process_product_names(ctx)
+        await websocket.send_json(
+            {
+                "type": "step_done",
+                "step": "name_processing_step",
+                "data": name_result,
+            }
+        )
 
-                # Step 2: product_name_processing_tool
-                await websocket.send_json({"type": "progress", "step": "Processing Product Name & OCR... (product_name_processing_tool)"})
-                result = await session.call_tool("product_name_processing_tool", {})
-                content = json.loads(result.content[0].text) if result.content else {}
-                
-                await websocket.send_json({
-                    "type": "step_done", 
-                    "step": "product_name_processing_tool",
-                    "data": content
-                })
-
-                # (Fallback to product_price_processing_tool if name processing failed)
-                if not content.get("success", False):
-                    await websocket.send_json({"type": "log", "message": "Name processing failed or incomplete. Attempting price processing..."})
-                    await websocket.send_json({"type": "progress", "step": "Processing Product Price... (product_price_processing_tool)"})
-                    price_result = await session.call_tool("product_price_processing_tool", {})
-                    await websocket.send_json({
-                        "type": "step_done", 
-                        "step": "product_price_processing_tool",
-                        "data": json.loads(price_result.content[0].text) if price_result.content else {}
-                    })
-
-                # Step 3: extract_data_tool
-                await websocket.send_json({"type": "progress", "step": "Generating extraction configurations... (extract_data_tool)"})
-                result = await session.call_tool("extract_data_tool", {"extraction_request": extraction_request})
-                config_data = json.loads(result.content[0].text) if result.content else {}
-                await websocket.send_json({
+        if not name_result.get("success", False):
+            await websocket.send_json(
+                {
+                    "type": "progress",
+                    "step": "Fallback: processing product prices (price_processing_step)",
+                }
+            )
+            price_result = await process_product_prices(ctx)
+            await websocket.send_json(
+                {
                     "type": "step_done",
-                    "step": "extract_data_tool",
-                    "data": config_data
-                })
+                    "step": "price_processing_step",
+                    "data": price_result,
+                }
+            )
 
-                if not config_data.get("success", False):
-                    await websocket.send_json({"type": "error", "message": "Failed to generate extraction configuration."})
-                    return
+        await websocket.send_json(
+            {
+                "type": "progress",
+                "step": "Generating extraction schema (schema_generation_step)",
+            }
+        )
+        schema_result = await build_extraction_schema(extraction_request, ctx)
+        await websocket.send_json(
+            {
+                "type": "step_done",
+                "step": "schema_generation_step",
+                "data": schema_result,
+            }
+        )
+        if not schema_result.get("success", False):
+            await websocket.send_json(
+                {"type": "error", "message": "Failed to generate extraction schema"}
+            )
+            return
 
-                schema_path = config_data.get("schema_path", "")
-
-                # Step 4: execute_extraction_tool
-                await websocket.send_json({"type": "progress", "step": f"Executing extraction using schema {schema_path}... (execute_extraction_tool)"})
-                kwargs = {"selectors_config_path": schema_path} if schema_path else {}
-                result = await session.call_tool("execute_extraction_tool", kwargs)
-                final_data = json.loads(result.content[0].text) if result.content else {}
-                
-                await websocket.send_json({
-                    "type": "step_done",
-                    "step": "execute_extraction_tool",
-                    "data": final_data
-                })
-
-                await websocket.send_json({
-                    "type": "result",
-                    "data": final_data
-                })
-                await websocket.send_json({"type": "complete"})
-
-    except Exception as e:
-        await websocket.send_json({"type": "fatal", "message": str(e)})
+        await websocket.send_json(
+            {
+                "type": "progress",
+                "step": "Executing extraction (execute_extraction_step)",
+            }
+        )
+        extraction_result = await run_extraction_with_schema(
+            browser=browser,
+            selectors_config_path=schema_result.get("schema_path", ""),
+            ctx=ctx,
+        )
+        await websocket.send_json(
+            {
+                "type": "step_done",
+                "step": "execute_extraction_step",
+                "data": extraction_result,
+            }
+        )
+        await websocket.send_json({"type": "result", "data": extraction_result})
+        await websocket.send_json({"type": "complete"})
+    except Exception as exc:
+        await websocket.send_json({"type": "fatal", "message": str(exc)})
 
 
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        data = await websocket.receive_text()
-        msg = json.loads(data)
-        
-        if msg.get("action") == "start":
-            filename = msg.get("filename", "unknown.mhtml")
-            extraction_request = msg.get("extraction_request", "I want to extract all product names and prices")
-            await websocket.send_json({"type": "log", "message": f"Starting extraction pipeline for {filename}..."})
-            await run_mcp_pipeline(websocket, filename, extraction_request)
-            
+        message_text = await websocket.receive_text()
+        message = json.loads(message_text)
+        if message.get("action") != "start":
+            await websocket.send_json({"type": "error", "message": "Unknown action"})
+            return
+
+        extraction_request = (
+            message.get("extraction_request", "").strip()
+            or "I want to extract all product names and prices"
+        )
+        browser: Browser = websocket.app.state.browser
+        await run_pipeline(websocket, extraction_request, browser)
     except WebSocketDisconnect:
-        print("Client disconnected")
-    except Exception as e:
-        await websocket.send_json({"type": "fatal", "message": str(e)})
+        pass
+    except Exception as exc:
+        await websocket.send_json({"type": "fatal", "message": str(exc)})
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

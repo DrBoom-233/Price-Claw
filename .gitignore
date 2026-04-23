@@ -10,6 +10,7 @@ wheels/
 .venv
 /extractor/BeautifulSoup_Content.json
 /.env
+/.app_settings.json
 /item_info.json
 /price_info.json
 extractor/price_info.json
@@ -20,3 +21,8 @@ extractor/item_info.json
 /.idea
 /extraction_schemas
 /price_info_output
+/.app_settings.json
+/node_modules
+/frontend/node_modules
+/frontend/dist
+/dist-electron

@@ -3,16 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MCP Extraction Client</title>
+    <title>Local Extraction Client</title>
     <style>
-        body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f9fafb; display: flex; flex-direction: column; gap: 1.5rem; }
-        .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        h1, h2 { margin-top: 0; color: #111827; }
-        .form-group { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
-        button { background: #3b82f6; color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 1rem; }
-        button:hover { background: #2563eb; }
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 860px; margin: 0 auto; padding: 2rem; background: #f9fafb; display: flex; flex-direction: column; gap: 1.25rem; }
+        .card { background: white; padding: 1.25rem; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+        h1, h2, h3 { margin: 0 0 .8rem; color: #111827; }
+        p { margin: 0.4rem 0 1rem; color: #374151; }
+        .form-group { display: flex; gap: .75rem; align-items: center; margin-bottom: .8rem; flex-wrap: wrap; }
+        .field-group { display: flex; flex-direction: column; gap: .3rem; flex: 1; min-width: 220px; }
+        input, textarea { border: 1px solid #d1d5db; border-radius: 6px; padding: 0.5rem; font-size: 0.95rem; }
+        button { background: #2563eb; color: #fff; border: none; padding: 0.55rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; }
+        button:hover { background: #1d4ed8; }
         button:disabled { background: #9ca3af; cursor: not-allowed; }
-        #console { background: #1f2937; color: #a5b4fc; padding: 1rem; border-radius: 6px; font-family: monospace; height: 300px; overflow-y: auto; white-space: pre-wrap; font-size: 0.9rem; }
+        .note { font-size: .85rem; color: #6b7280; }
+        #settingsStatus { font-size: .9rem; }
+        #console { background: #111827; color: #e5e7eb; padding: 1rem; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; height: 320px; overflow-y: auto; white-space: pre-wrap; font-size: 0.88rem; }
         .log-info { color: #d1d5db; }
         .log-success { color: #4ade80; }
         .log-error { color: #f87171; }
@@ -21,112 +26,222 @@
 </head>
 <body>
     <div class="card">
-        <h1>MCP Extraction Client</h1>
-        <p>Upload an MHTML file of a product page, then start the automated extraction process.</p>
+        <h1>Local Extraction Client</h1>
+        <p>先配置 OpenAI API Key，再上传 MHTML 文件执行抽取。</p>
+    </div>
+
+    <div class="card">
+        <h2>Settings</h2>
+        <div class="form-group">
+            <div class="field-group">
+                <label for="apiKeyInput">OpenAI API Key</label>
+                <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" />
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="field-group">
+                <label for="modelInput">Model</label>
+                <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
+            </div>
+            <div class="field-group">
+                <label for="reasoningModelInput">Reasoning Model</label>
+                <input id="reasoningModelInput" type="text" placeholder="o4-mini" />
+            </div>
+            <button id="saveSettingsBtn">Save Settings</button>
+        </div>
+        <div id="settingsStatus">Loading settings...</div>
+        <div class="note">API key only stores on this local machine.</div>
+    </div>
+
+    <div class="card">
+        <h2>Extraction</h2>
         <div class="form-group">
             <input type="file" id="fileInput" accept=".mhtml" />
             <button id="uploadBtn">1. Upload File</button>
         </div>
         <div id="uploadStatus"></div>
-        <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 1.5rem 0;" />
+        <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 1rem 0;" />
         <div class="form-group" style="align-items: flex-start; flex-direction: column;">
-            <label for="extractionRequest" style="font-weight: 500; font-size: 0.95rem;">Extraction Request (Natural Language):</label>
-            <textarea id="extractionRequest" rows="3" style="width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 0.5rem; font-family: inherit; font-size: 0.95rem; resize: vertical;" placeholder="e.g., I want to extract all product names and prices">I want to extract all product names and prices</textarea>
+            <label for="extractionRequest">Extraction Request (Natural Language)</label>
+            <textarea id="extractionRequest" rows="3" style="width: 100%; resize: vertical;">I want to extract all product names and prices</textarea>
         </div>
-        <div class="form-group">
-            <button id="startBtn" disabled>2. Start Extraction Task</button>
-        </div>
+        <button id="startBtn" disabled>2. Start Extraction Task</button>
     </div>
+
     <div class="card">
-        <h2>Task Console</h2>
-        <div id="console">System ready. Please upload a file first.</div>
+        <h3>Task Console</h3>
+        <div id="console">System ready.</div>
     </div>
 
     <script>
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const modelInput = document.getElementById('modelInput');
+        const reasoningModelInput = document.getElementById('reasoningModelInput');
+        const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+        const settingsStatus = document.getElementById('settingsStatus');
+
         const fileInput = document.getElementById('fileInput');
         const uploadBtn = document.getElementById('uploadBtn');
         const startBtn = document.getElementById('startBtn');
         const extractionRequestInput = document.getElementById('extractionRequest');
         const consoleEl = document.getElementById('console');
         const uploadStatus = document.getElementById('uploadStatus');
+
         let currentFilename = '';
+        let settingsConfigured = false;
 
         function log(message, type = 'info') {
             const time = new Date().toLocaleTimeString();
-            const span = document.createElement('div');
-            span.className = `log-${type}`;
-            span.textContent = `[${time}] ${message}`;
-            consoleEl.appendChild(span);
+            const line = document.createElement('div');
+            line.className = `log-${type}`;
+            line.textContent = `[${time}] ${message}`;
+            consoleEl.appendChild(line);
             consoleEl.scrollTop = consoleEl.scrollHeight;
         }
 
+        function updateStartButton() {
+            startBtn.disabled = !(currentFilename && settingsConfigured);
+        }
+
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const data = await response.json();
+                settingsConfigured = !!data.configured;
+                modelInput.value = data.model || 'gpt-4o-mini';
+                reasoningModelInput.value = data.reasoningModel || 'o4-mini';
+
+                if (settingsConfigured) {
+                    settingsStatus.textContent = `Configured (${data.apiKeyMasked})`;
+                    settingsStatus.style.color = '#059669';
+                } else {
+                    settingsStatus.textContent = 'Not configured';
+                    settingsStatus.style.color = '#dc2626';
+                }
+                updateStartButton();
+            } catch (error) {
+                settingsStatus.textContent = 'Failed to load settings';
+                settingsStatus.style.color = '#dc2626';
+                log(`Settings load failed: ${error.message}`, 'error');
+            }
+        }
+
+        saveSettingsBtn.addEventListener('click', async () => {
+            const apiKey = apiKeyInput.value.trim();
+            const model = modelInput.value.trim();
+            const reasoningModel = reasoningModelInput.value.trim();
+            if (!apiKey) {
+                log('Please input API key before saving.', 'error');
+                return;
+            }
+
+            saveSettingsBtn.disabled = true;
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        apiKey,
+                        model,
+                        reasoningModel
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to save settings');
+                }
+                apiKeyInput.value = '';
+                settingsConfigured = !!data.configured;
+                settingsStatus.textContent = `Configured (${data.apiKeyMasked})`;
+                settingsStatus.style.color = '#059669';
+                log('Settings saved successfully.', 'success');
+                updateStartButton();
+            } catch (error) {
+                log(`Save settings failed: ${error.message}`, 'error');
+            } finally {
+                saveSettingsBtn.disabled = false;
+            }
+        });
+
         uploadBtn.addEventListener('click', async () => {
             if (!fileInput.files[0]) {
-                log('Error: Please select a file first!', 'error');
+                log('Please select an MHTML file first.', 'error');
                 return;
             }
             const file = fileInput.files[0];
             const formData = new FormData();
             formData.append('file', file);
-            
-            log(`Starting upload: ${file.name}`, 'info');
+
             uploadBtn.disabled = true;
-            
+            log(`Uploading ${file.name} ...`, 'info');
             try {
                 const response = await fetch('/api/upload', {
                     method: 'POST',
                     body: formData
                 });
                 const result = await response.json();
-                if (response.ok) {
-                    log(`Upload successful: ${result.filename}`, 'success');
-                    uploadStatus.textContent = `Uploaded: ${result.filename}`;
-                    uploadStatus.style.color = '#10b981';
-                    currentFilename = result.filename;
-                    startBtn.disabled = false;
-                } else {
+                if (!response.ok) {
                     throw new Error(result.detail || 'Upload failed');
                 }
-            } catch (err) {
-                log(`Upload error: ${err.message}`, 'error');
+                currentFilename = result.filename;
+                uploadStatus.textContent = `Uploaded: ${result.filename}`;
+                uploadStatus.style.color = '#059669';
+                log(`Upload successful: ${result.filename}`, 'success');
+                updateStartButton();
+            } catch (error) {
+                log(`Upload failed: ${error.message}`, 'error');
             } finally {
                 uploadBtn.disabled = false;
             }
         });
 
         startBtn.addEventListener('click', () => {
-            log('Connecting to MCP task server...', 'ws');
+            if (!settingsConfigured) {
+                log('Please configure API key first.', 'error');
+                return;
+            }
+            if (!currentFilename) {
+                log('Please upload a file first.', 'error');
+                return;
+            }
+
             startBtn.disabled = true;
             fileInput.disabled = true;
             uploadBtn.disabled = true;
             extractionRequestInput.disabled = true;
+            saveSettingsBtn.disabled = true;
+            apiKeyInput.disabled = true;
+            modelInput.disabled = true;
+            reasoningModelInput.disabled = true;
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
 
             ws.onopen = () => {
-                log('Connection successful, starting tool chain execution', 'success');
-                const requestText = extractionRequestInput.value.trim() || "I want to extract all product names and prices";
-                ws.send(JSON.stringify({ 
-                    action: 'start', 
+                log('WebSocket connected, pipeline started.', 'ws');
+                ws.send(JSON.stringify({
+                    action: 'start',
                     filename: currentFilename,
-                    extraction_request: requestText 
+                    extraction_request: extractionRequestInput.value.trim()
                 }));
             };
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                switch(data.type) {
-                    case 'log':
-                        log(data.message, 'info');
+                switch (data.type) {
+                    case 'log': {
+                        const level = data.level || 'info';
+                        const logType = level === 'error' ? 'error' : (level === 'warning' ? 'ws' : 'info');
+                        log(data.message, logType);
                         break;
+                    }
                     case 'progress':
                         log(`[Executing] ${data.step}`, 'ws');
                         break;
                     case 'step_done':
                         log(`[Completed] ${data.step}`, 'success');
                         if (data.data) {
-                            log(`  Returned data: ${JSON.stringify(data.data)}`, 'info');
+                            log(`Returned data: ${JSON.stringify(data.data)}`, 'info');
                         }
                         break;
                     case 'result':
@@ -140,29 +255,32 @@
                         ws.close();
                         break;
                     case 'complete':
-                        log('🎉 Extraction task completed successfully!', 'success');
+                        log('Extraction completed.', 'success');
                         ws.close();
                         break;
                 }
             };
 
             ws.onclose = () => {
-                log('Connection closed. You can re-upload or try again.', 'ws');
-                resetUI();
+                log('WebSocket closed.', 'ws');
+                fileInput.disabled = false;
+                uploadBtn.disabled = false;
+                extractionRequestInput.disabled = false;
+                saveSettingsBtn.disabled = false;
+                apiKeyInput.disabled = false;
+                modelInput.disabled = false;
+                reasoningModelInput.disabled = false;
+                updateStartButton();
             };
 
-            ws.onerror = (err) => {
-                log(`WebSocket connection error`, 'error');
-                resetUI();
+            ws.onerror = () => {
+                log('WebSocket error.', 'error');
+                ws.close();
             };
         });
 
-        function resetUI() {
-            startBtn.disabled = false;
-            fileInput.disabled = false;
-            uploadBtn.disabled = false;
-            extractionRequestInput.disabled = false;
-        }
+        loadSettings();
     </script>
 </body>
 </html>
+

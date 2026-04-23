@@ -1,0 +1,21 @@
+{
+  "name": "price-claw-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "dev:backend": "uv run python server.py",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:electron": "cross-env ELECTRON_START_URL=http://localhost:5173 electron ./electron/main.js",
+    "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\" \"wait-on http://127.0.0.1:8000/api/health http://localhost:5173 && npm run dev:electron\"",
+    "build:frontend": "npm --prefix frontend run build",
+    "start:electron": "electron ./electron/main.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^35.2.0",
+    "wait-on": "^8.0.1"
+  }
+}
+

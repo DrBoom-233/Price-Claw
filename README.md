@@ -1,114 +1,63 @@
-# 🚀 ODLP MCP
+# Price Claw (Electron + React + FastAPI)
 
-> A lightweight MCP service that uses a large language model (LLM) to extract price and product information from e‑commerce pages.
+Local desktop extraction app for e-commerce `.mhtml` pages.
 
----
+## Architecture
 
-✨ Highlights
-- Adapts to many e-commerce layouts and page structures.
-- Extracts fields like product name, price, size, color, country/region, etc.
-- No hardcoded rules, just describe your needs in natural language.
----
-✨ Difference between ODLP_MCP and crawl4ai (https://github.com/unclecode/crawl4ai):
-- ODLP_MCP focuses on e-commerce product data extraction, while crawl4ai is a general web scraping framework. ODLP_MCP is designed for robust price data extraction across diverse e-commerce sites.
----
+- `frontend/`: React + Vite UI.
+- `electron/`: desktop shell (main/preload), starts backend process.
+- `client.py` / `server.py`: FastAPI backend.
 
-✨ How it works
-- Describe your extraction needs in natural language (e.g., “Extract product title, current price, available sizes, shipping country, and return JSON”).
-- The LLM plans steps, generates CSS/XPath selectors, and performs extraction automatically.
+## Prerequisites
 
----
+- Python 3.12+
+- Node.js 20+
+- [uv](https://github.com/astral-sh/uv)
+- Playwright browser binaries: `uv run playwright install chromium`
+- Tesseract OCR (set `TESSERACT_CMD` when needed)
 
-## 🔧 Before You Start
-- Save a page as MHTML: in your browser use "Save as" → "Webpage, Single File (*.mhtml)". To ensure extraction success, please go to **category specific grid-style product listing pages**, where the DOM Tree traversing algorithm can work. Example url like: `https://www.metro.ca/en/online-grocery/aisles/fruits-vegetables`. Not like `https://www.amazon.ca/`.
-- Obtain an LLM API key (e.g., OpenAI). Recommended: one general model (e.g., `gpt-4o-mini`) and one reasoning model (e.g., `o4-mini`).
-
----
-
-## 🛠 Environment Setup
-
-The project manages Python dependencies with [uv](https://github.com/astral-sh/uv).
+## Install
 
 ```bash
-# install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# create and activate virtual environment
 uv venv
-source .venv/bin/activate
-
-# install project dependencies
 uv sync
+npm install
+npm --prefix frontend install
 ```
 
----
+## Development (all-in-one)
 
-## 🔑 API Key Configuration
-
-`config.py` reads API keys and model names from environment variables. Create a `.env` file in the project root:
-
-```
-OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_REASONING_MODEL=o4-mini
+```bash
+npm run dev
 ```
 
-Use `OPENAI_MODEL` for general extraction and `OPENAI_REASONING_MODEL` for selector/reasoning tasks.
+This starts:
 
----
+- FastAPI backend on `http://127.0.0.1:8000`
+- Vite frontend on `http://localhost:5173`
+- Electron desktop window loading the Vite app
 
-## 🔁 Model & Service Customization
+## Run backend only
 
-OpenAI is the default. To switch providers (e.g., DeepSeek), update API calls in:
-- `config.py`
-- `extractor/ocr.py`
-- `extractor/css_selector_generator.py`
-
-OCR service can be changed via the `service_type` parameter of `process_ocr_price`.
-
----
-
-## 🚀 Run Web Client 
-
-We also provide a fully automated, interactive web-based UI. You can upload MHTML pages and watch the extraction process execute step by step in real time.
-
-1. Run `uv run python client.py` in your terminal.
-2. Open your browser and go to `http://localhost:8000`
-3. Upload your `.mhtml` file, customize the string query if needed, and start extraction!
-
----
-
-## 🔌 Connect to other MCP Clients
-
-Create an `MCP.json` to register this server with an MCP-compatible client:
-
-```json
-{
-  "servers": {
-    "ODLP_MCP": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "run",
-        "--project", "${workspaceFolder}",
-        "--with", "mcp",
-        "--with", "python-dotenv",
-        "--with", "openai",
-        "--with", "drissionpage",
-        "--with", "beautifulsoup4",
-        "--with", "playwright",
-        "--with", "pytesseract",
-        "mcp",
-        "run",
-        "/absolute/path/to/server.py"
-      ]
-    }
-  }
-}
+```bash
+uv run python server.py
 ```
 
-Replace `/absolute/path/to/server.py` with the absolute path to `server.py` on your machine.
+Health check:
 
----
+- `GET http://127.0.0.1:8000/api/health`
 
-⭐ From my side I use GitHub Copilot in VS Code as the client. Tutorial website: https://code.visualstudio.com/docs/copilot/customization/mcp-servers; you may use other MCP-compatible clients (Claude Code, Gemini CLI, etc.).
+## API key settings
+
+- Configure key/model in frontend Settings page.
+- Stored locally in `/.app_settings.json` (gitignored).
+- Backend only returns masked key in `GET /api/settings`.
+
+## Useful scripts
+
+- `npm run dev:backend`
+- `npm run dev:frontend`
+- `npm run dev:electron`
+- `npm run build:frontend`
+- `npm run start:electron`
+
