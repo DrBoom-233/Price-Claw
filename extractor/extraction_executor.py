@@ -6,6 +6,7 @@ Extraction Executor
 This module is responsible for executing data extraction operations, extracting data from mhtml files based on the provided selector configuration.
 """
 
+import asyncio
 import json
 import logging
 import datetime
@@ -90,7 +91,11 @@ class ExtractionExecutor:
             self.error_callback(f"❌ {error_msg}")
             raise ValueError(error_msg)
 
-    async def find_mhtml_files(self, directory: str = "mhtml_output") -> List[Path]:
+    async def find_mhtml_files(
+        self,
+        directory: str = "mhtml_output",
+        include_filenames: Optional[List[str]] = None,
+    ) -> List[Path]:
         """
         Find MHTML files
         
@@ -106,7 +111,17 @@ class ExtractionExecutor:
             self.error_callback(f"❌ {error_msg}")
             raise FileNotFoundError(error_msg)
             
-        mhtml_files = list(dir_path.glob("*.mhtml"))
+        if include_filenames:
+            requested = {name.strip() for name in include_filenames if name and name.strip()}
+            mhtml_files = [dir_path / name for name in requested]
+            missing_files = [file.name for file in mhtml_files if not file.exists()]
+            if missing_files:
+                error_msg = f"Requested MHTML files do not exist: {', '.join(sorted(missing_files))}"
+                self.error_callback(f"❌ {error_msg}")
+                raise FileNotFoundError(error_msg)
+        else:
+            mhtml_files = list(dir_path.glob("*.mhtml"))
+
         if not mhtml_files:
             error_msg = f"No MHTML files found in the {directory} directory"
             self.error_callback(f"❌ {error_msg}")
@@ -263,7 +278,14 @@ class ExtractionExecutor:
                 "error": str(e)
             }
 
-    async def execute_extraction(self, selectors_config_path: str, output_dir: str = "price_info_output") -> Dict[str, Any]:
+    async def execute_extraction(
+        self,
+        selectors_config_path: str,
+        output_dir: str = "price_info_output",
+        include_filenames: Optional[List[str]] = None,
+        concurrency: int = 3,
+        write_local_output: bool = False,
+    ) -> Dict[str, Any]:
         """
         Main function to execute extraction operations
         
@@ -279,16 +301,40 @@ class ExtractionExecutor:
             selectors_config = await self.load_selector_config(selectors_config_path)
             
             # Find MHTML files
-            mhtml_files = await self.find_mhtml_files()
+            mhtml_files = await self.find_mhtml_files(include_filenames=include_filenames)
             
             # Prepare for extraction operations
             self.info_callback("🔍 Starting data extraction...")
             
-            # Process all files
+            # Process all files with controlled concurrency to avoid browser resource contention.
+            safe_concurrency = max(1, min(concurrency, len(mhtml_files)))
+            semaphore = asyncio.Semaphore(safe_concurrency)
+
+            async def _extract_with_limit(mhtml_file: Path) -> Dict[str, Any]:
+                async with semaphore:
+                    return await self.extract_from_file(mhtml_file, selectors_config)
+
+            gathered = await asyncio.gather(
+                *[_extract_with_limit(mhtml_file) for mhtml_file in mhtml_files],
+                return_exceptions=True,
+            )
+
             all_files_results = []
-            for mhtml_file in mhtml_files:
-                file_result = await self.extract_from_file(mhtml_file, selectors_config)
-                all_files_results.append(file_result)
+            for idx, item in enumerate(gathered):
+                if isinstance(item, Exception):
+                    failed_file = mhtml_files[idx]
+                    error_text = str(item)
+                    self.error_callback(f"❌ Failed to process {failed_file.name}: {error_text}")
+                    all_files_results.append(
+                        {
+                            "file_name": failed_file.name,
+                            "items_count": 0,
+                            "items": [],
+                            "error": error_text,
+                        }
+                    )
+                else:
+                    all_files_results.append(item)
             
             # Use MHTML file name as the output JSON name
             if len(mhtml_files) == 1:
@@ -300,12 +346,15 @@ class ExtractionExecutor:
                 mhtml_name = mhtml_files[0].stem
                 results_filename = f"{mhtml_name}_and_{len(mhtml_files)-1}_more.json"
             
-            # Ensure the output directory exists
-            output_path = Path(output_dir)
-            output_path.mkdir(exist_ok=True)
-            
-            # Result file path
-            results_path = output_path / results_filename
+            results_path = ""
+            if write_local_output:
+                # Ensure the output directory exists
+                output_path = Path(output_dir)
+                output_path.mkdir(exist_ok=True)
+
+                # Result file path
+                output_path_file = output_path / results_filename
+                results_path = str(output_path_file)
             
             # Calculate total number of items
             total_items = sum(file_result.get("items_count", 0) for file_result in all_files_results)
@@ -317,11 +366,12 @@ class ExtractionExecutor:
                 "results": all_files_results
             }
             
-            # Save results
-            with open(results_path, 'w', encoding='utf-8') as f:
-                json.dump(final_results, f, indent=2, ensure_ascii=False)
-            
-            self.info_callback(f"💾 Extraction results saved to: {results_path}")
+            if write_local_output:
+                # Save results
+                with open(results_path, 'w', encoding='utf-8') as f:
+                    json.dump(final_results, f, indent=2, ensure_ascii=False)
+
+                self.info_callback(f"💾 Extraction results saved to: {results_path}")
             
             # Display overall results
             self.info_callback(f"📊 Successfully processed {len(all_files_results)}/{len(mhtml_files)} MHTML files, extracted {total_items} data items in total")
@@ -330,7 +380,8 @@ class ExtractionExecutor:
                 "success": True,
                 "files_processed": len(all_files_results),
                 "total_items": total_items,
-                "results_path": str(results_path)
+                "results_path": results_path,
+                "results": all_files_results,
             }
             
         except Exception as e:
@@ -342,7 +393,10 @@ async def execute_extraction(
     browser: Browser, 
     selectors_config_path: str,
     info_callback: Optional[Callable] = None,
-    error_callback: Optional[Callable] = None
+    error_callback: Optional[Callable] = None,
+    include_filenames: Optional[List[str]] = None,
+    concurrency: int = 3,
+    write_local_output: bool = False,
 ) -> Dict[str, Any]:
     """
     Convenient function to execute data extraction
@@ -357,4 +411,9 @@ async def execute_extraction(
         Dictionary containing extraction results
     """
     executor = ExtractionExecutor(browser, info_callback, error_callback)
-    return await executor.execute_extraction(selectors_config_path)
+    return await executor.execute_extraction(
+        selectors_config_path,
+        include_filenames=include_filenames,
+        concurrency=concurrency,
+        write_local_output=write_local_output,
+    )

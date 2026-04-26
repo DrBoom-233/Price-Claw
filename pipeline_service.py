@@ -22,8 +22,17 @@ class LogContext(Protocol):
 
 
 def _callback_for(async_logger: Callable[[str], Awaitable[None]]) -> Callable[[str], None]:
+    def _mark_exception_retrieved(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except Exception:
+            pass
+
     def _callback(message: str) -> None:
-        asyncio.create_task(async_logger(str(message)))
+        task = asyncio.create_task(async_logger(str(message)))
+        task.add_done_callback(_mark_exception_retrieved)
 
     return _callback
 
@@ -147,6 +156,9 @@ async def run_extraction_with_schema(
     browser: Browser,
     selectors_config_path: str | None,
     ctx: LogContext,
+    mhtml_filenames: list[str] | None = None,
+    concurrency: int = 3,
+    write_local_output: bool = False,
 ) -> dict:
     resolved_path = _resolve_schema_path(selectors_config_path)
     if not resolved_path:
@@ -158,5 +170,7 @@ async def run_extraction_with_schema(
         selectors_config_path=resolved_path,
         info_callback=_callback_for(ctx.info),
         error_callback=_callback_for(ctx.error),
+        include_filenames=mhtml_filenames,
+        concurrency=concurrency,
+        write_local_output=write_local_output,
     )
-

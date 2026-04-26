@@ -51,15 +51,22 @@ function App() {
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState("");
 
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [uploadedFilename, setUploadedFilename] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [uploadedFilenames, setUploadedFilenames] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [requestText, setRequestText] = useState(DEFAULT_REQUEST);
+  const [schemas, setSchemas] = useState([]);
+  const [selectedSchemaId, setSelectedSchemaId] = useState("");
+  const [isLoadingSchemas, setIsLoadingSchemas] = useState(false);
+  const [schemaLoadError, setSchemaLoadError] = useState("");
+  const [useLlm, setUseLlm] = useState(false);
+  const [taskMode, setTaskMode] = useState("uniform");
+  const [filePlans, setFilePlans] = useState({});
   const [logs, setLogs] = useState([{ type: "info", text: "System ready." }]);
 
-  const canStart = settingsConfigured && !!uploadedFilename && !isRunning;
-  const uploadStatus = uploadedFilename ? `Uploaded: ${uploadedFilename}` : "";
+  const canStart = settingsConfigured && uploadedFilenames.length > 0 && !isRunning;
+  const uploadStatus = uploadedFilenames.length > 0 ? `Uploaded: ${uploadedFilenames.join(", ")}` : "";
 
   const api = useMemo(
     () => ({
@@ -76,6 +83,7 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         }),
+      getSchemas: () => fetch(joinUrl(apiBaseUrl, "/api/schemas")),
       uploadFile: (formData) =>
         fetch(joinUrl(apiBaseUrl, "/api/upload"), {
           method: "POST",
@@ -88,6 +96,37 @@ function App() {
   function appendLog(text, type = "info") {
     const time = new Date().toLocaleTimeString();
     setLogs((prev) => [...prev, { type, text: `[${time}] ${text}` }]);
+  }
+
+  async function loadSchemas() {
+    try {
+      setIsLoadingSchemas(true);
+      setSchemaLoadError("");
+      const response = await api.getSchemas();
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load schemas");
+      }
+
+      const schemaList = Array.isArray(data.schemas) ? data.schemas : [];
+      setSchemas(schemaList);
+
+      if (schemaList.length === 0) {
+        setSelectedSchemaId("");
+        return;
+      }
+
+      const exists = schemaList.some((item) => item.id === selectedSchemaId);
+      if (!exists) {
+        setSelectedSchemaId("");
+      }
+    } catch (error) {
+      setSchemas([]);
+      setSelectedSchemaId("");
+      setSchemaLoadError(String(error));
+    } finally {
+      setIsLoadingSchemas(false);
+    }
   }
 
   useEffect(() => {
@@ -149,6 +188,11 @@ function App() {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(() => {
+    loadSchemas();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBaseUrl]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -237,6 +281,7 @@ function App() {
       setSettingsStatusType("success");
       setIsSettingsOpen(false);
       appendLog("Settings saved.", "success");
+      loadSchemas();
     } catch (error) {
       appendLog(`Save settings failed: ${error}`, "error");
     } finally {
@@ -245,23 +290,42 @@ function App() {
   }
 
   async function handleUpload() {
-    if (!selectedFile) {
-      appendLog("Please select an MHTML file first.", "error");
+    if (selectedFiles.length === 0) {
+      appendLog("Please select at least one MHTML file first.", "error");
       return;
     }
 
     setIsUploading(true);
-    appendLog(`Uploading ${selectedFile.name} ...`);
+    appendLog(`Uploading ${selectedFiles.length} file(s) ...`);
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
+      selectedFiles.forEach((file) => {
+        formData.append("file", file);
+      });
       const response = await api.uploadFile(formData);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.detail || "Upload failed");
       }
-      setUploadedFilename(data.filename);
-      appendLog(`Upload successful: ${data.filename}`, "success");
+      const incoming = Array.isArray(data.filenames)
+        ? data.filenames
+        : data.filename
+          ? [data.filename]
+          : [];
+      
+      setUploadedFilenames(incoming);
+      
+      setFilePlans((prevPlans) => {
+        const nextPlans = { ...prevPlans };
+        incoming.forEach((filename) => {
+          if (!nextPlans[filename]) {
+            nextPlans[filename] = { schemaId: "", useLlm: false };
+          }
+        });
+        return nextPlans;
+      });
+
+      appendLog(`Upload successful: ${incoming.join(", ")}`, "success");
     } catch (error) {
       appendLog(`Upload failed: ${error}`, "error");
     } finally {
@@ -284,8 +348,18 @@ function App() {
       ws.send(
         JSON.stringify({
           action: "start",
-          filename: uploadedFilename,
-          extraction_request: requestText.trim() || DEFAULT_REQUEST
+          filenames: uploadedFilenames,
+          extraction_request: requestText.trim() || DEFAULT_REQUEST,
+          schema_id: selectedSchemaId || null,
+          task_mode: taskMode,
+          use_llm: useLlm,
+          file_plans: Object.entries(filePlans)
+            .filter(([filename]) => uploadedFilenames.includes(filename))
+            .map(([filename, plan]) => ({
+              filename,
+              schema_id: plan.schemaId || null,
+              use_llm: plan.useLlm
+            }))
         })
       );
     };
@@ -368,13 +442,123 @@ function App() {
           <input
             type="file"
             accept=".mhtml"
-            onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+            multiple
+            onChange={(event) => setSelectedFiles(Array.from(event.target.files || []))}
             disabled={isRunning || isUploading}
           />
-          <button onClick={handleUpload} disabled={isRunning || isUploading}>
+          <button onClick={handleUpload} disabled={isRunning || isUploading || selectedFiles.length === 0}>
             {isUploading ? "Uploading..." : "1. Upload File"}
           </button>
         </div>
+        <div className="form-row">
+          <label htmlFor="taskMode">Task Mode</label>
+          <div className="actions">
+            <select
+              id="taskMode"
+              value={taskMode}
+              onChange={(event) => setTaskMode(event.target.value)}
+              disabled={isRunning || uploadedFilenames.length === 0}
+            >
+              <option value="uniform">Uniform (All files share configuration)</option>
+              <option value="per_file">Per-File Override (Select schema/LLM for each file)</option>
+            </select>
+          </div>
+        </div>
+
+        {taskMode === "uniform" ? (
+          <>
+            <div className="form-row">
+              <label htmlFor="schemaSelect">Saved Schema</label>
+              <div className="actions">
+                <select
+                  id="schemaSelect"
+                  value={selectedSchemaId}
+                  onChange={(event) => setSelectedSchemaId(event.target.value)}
+                  disabled={isRunning || isLoadingSchemas || useLlm || schemas.length === 0}
+                >
+                  <option value="">Auto (reuse by domain)</option>
+                  {schemas.map((schema) => (
+                    <option key={schema.id} value={schema.id}>
+                      {schema.schemaName} ({schema.domain})
+                    </option>
+                  ))}
+                </select>
+                <button onClick={loadSchemas} disabled={isRunning || isLoadingSchemas}>
+                  {isLoadingSchemas ? "Refreshing..." : "Refresh Schemas"}
+                </button>
+              </div>
+            </div>
+            <div className="form-row">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={useLlm}
+                  onChange={(event) => setUseLlm(event.target.checked)}
+                  disabled={isRunning}
+                />
+                Use LLM to generate schema for this run
+              </label>
+            </div>
+          </>
+        ) : (
+          <div className="form-row table-container">
+             <label>Per-File Configurations</label>
+             <table className="data-table">
+               <thead>
+                 <tr>
+                   <th>Filename</th>
+                   <th>Schema / LLM Override</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 {uploadedFilenames.map((filename) => {
+                   const plan = filePlans[filename] || { schemaId: "", useLlm: false };
+                   return (
+                     <tr key={filename}>
+                       <td>{filename}</td>
+                       <td>
+                         <div className="actions">
+                           <select
+                             value={plan.schemaId}
+                             onChange={(e) =>
+                               setFilePlans((prev) => ({
+                                 ...prev,
+                                 [filename]: { ...prev[filename], schemaId: e.target.value }
+                               }))
+                             }
+                             disabled={isRunning || plan.useLlm}
+                           >
+                             <option value="">Auto (reuse by domain)</option>
+                             {schemas.map((schema) => (
+                               <option key={schema.id} value={schema.id}>
+                                 {schema.schemaName} ({schema.domain})
+                               </option>
+                             ))}
+                           </select>
+                           <label style={{ margin: 0, display: "flex", alignItems: "center", gap: "4px" }}>
+                             <input
+                               type="checkbox"
+                               checked={plan.useLlm}
+                               onChange={(e) =>
+                                 setFilePlans((prev) => ({
+                                   ...prev,
+                                   [filename]: { ...prev[filename], useLlm: e.target.checked }
+                                 }))
+                               }
+                               disabled={isRunning}
+                             />
+                             Force LLM
+                           </label>
+                         </div>
+                       </td>
+                     </tr>
+                   );
+                 })}
+               </tbody>
+             </table>
+          </div>
+        )}
+        {schemaLoadError ? <div className="status status-error">{schemaLoadError}</div> : null}
         {uploadStatus ? <div className="status status-success">{uploadStatus}</div> : null}
         <div className="form-row">
           <label htmlFor="request">Extraction Request</label>
