@@ -40,10 +40,16 @@ function App() {
   const [settingsConfigured, setSettingsConfigured] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState("Loading settings...");
   const [settingsStatusType, setSettingsStatusType] = useState("info");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [hasCheckedSettings, setHasCheckedSettings] = useState(false);
+
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4o-mini");
   const [reasoningModel, setReasoningModel] = useState("o4-mini");
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [modelsError, setModelsError] = useState("");
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadedFilename, setUploadedFilename] = useState("");
@@ -60,6 +66,12 @@ function App() {
       getSettings: () => fetch(joinUrl(apiBaseUrl, "/api/settings")),
       saveSettings: (payload) =>
         fetch(joinUrl(apiBaseUrl, "/api/settings"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }),
+      getModels: (payload) =>
+        fetch(joinUrl(apiBaseUrl, "/api/models"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -113,16 +125,21 @@ function App() {
         if (data.configured) {
           setSettingsStatus(`Configured (${data.apiKeyMasked})`);
           setSettingsStatusType("success");
+          setIsSettingsOpen(false);
         } else {
           setSettingsStatus("Not configured");
           setSettingsStatusType("error");
+          setIsSettingsOpen(true);
         }
+        setHasCheckedSettings(true);
       } catch (error) {
         if (cancelled) {
           return;
         }
         setSettingsStatus("Failed to load settings");
         setSettingsStatusType("error");
+        setIsSettingsOpen(true);
+        setHasCheckedSettings(true);
         appendLog(`Settings load failed: ${error}`, "error");
       }
     }
@@ -133,17 +150,79 @@ function App() {
     };
   }, [api]);
 
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    if (!settingsConfigured && !apiKey.trim()) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        setIsLoadingModels(true);
+        setModelsError("");
+        const response = await api.getModels({ apiKey: apiKey.trim() || undefined });
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(data.detail || "Failed to fetch models");
+        }
+
+        const models = Array.isArray(data.models) ? data.models : [];
+        setAvailableModels(models);
+        if (models.length > 0 && !models.includes(model)) {
+          setModel(models[0]);
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setAvailableModels([]);
+        setModelsError(String(error));
+      } finally {
+        if (!cancelled) {
+          setIsLoadingModels(false);
+        }
+      }
+    }, 600);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [api, apiKey, isSettingsOpen, model, settingsConfigured]);
+
   async function handleSaveSettings() {
     const trimmedApiKey = apiKey.trim();
-    if (!trimmedApiKey) {
+    if (!settingsConfigured && !trimmedApiKey) {
       appendLog("Please input API key before saving.", "error");
+      return;
+    }
+
+    if (isLoadingModels) {
+      appendLog("Models are still loading, please wait.", "error");
+      return;
+    }
+
+    if (!model.trim()) {
+      appendLog("Please select a model before saving.", "error");
+      return;
+    }
+
+    if (modelsError) {
+      appendLog("Please fix model loading error before saving.", "error");
       return;
     }
 
     setIsSavingSettings(true);
     try {
       const response = await api.saveSettings({
-        apiKey: trimmedApiKey,
+        apiKey: trimmedApiKey || apiKey,
         model,
         reasoningModel
       });
@@ -156,6 +235,7 @@ function App() {
       setSettingsConfigured(Boolean(data.configured));
       setSettingsStatus(`Configured (${data.apiKeyMasked})`);
       setSettingsStatusType("success");
+      setIsSettingsOpen(false);
       appendLog("Settings saved.", "success");
     } catch (error) {
       appendLog(`Save settings failed: ${error}`, "error");
@@ -265,42 +345,18 @@ function App() {
 
       <section className="card">
         <h2>Settings</h2>
-        <div className="form-row">
-          <label htmlFor="apiKey">OpenAI API Key</label>
-          <input
-            id="apiKey"
-            type="password"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="sk-..."
-            disabled={isRunning || isSavingSettings}
-          />
-        </div>
-        <div className="form-row-grid">
-          <div className="form-row">
-            <label htmlFor="model">Model</label>
-            <input
-              id="model"
-              type="text"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              disabled={isRunning || isSavingSettings}
-            />
-          </div>
-          <div className="form-row">
-            <label htmlFor="reasoningModel">Reasoning Model</label>
-            <input
-              id="reasoningModel"
-              type="text"
-              value={reasoningModel}
-              onChange={(event) => setReasoningModel(event.target.value)}
-              disabled={isRunning || isSavingSettings}
-            />
-          </div>
-        </div>
+        <p className="subtitle">
+          API key is configured in a secure popup and is no longer shown directly on the page.
+        </p>
         <div className="actions">
-          <button onClick={handleSaveSettings} disabled={isRunning || isSavingSettings}>
-            {isSavingSettings ? "Saving..." : "Save Settings"}
+          <button
+            onClick={() => {
+              setModelsError("");
+              setIsSettingsOpen(true);
+            }}
+            disabled={isRunning || !hasCheckedSettings}
+          >
+            Open Settings
           </button>
           <span className={`status status-${settingsStatusType}`}>{settingsStatus}</span>
         </div>
@@ -345,6 +401,69 @@ function App() {
           ))}
         </div>
       </section>
+
+      {isSettingsOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <h2 id="settings-title">OpenAI Settings</h2>
+            <div className="form-row">
+              <label htmlFor="apiKey">OpenAI API Key</label>
+              <input
+                id="apiKey"
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                placeholder={settingsConfigured ? "Leave empty to keep current key" : "sk-..."}
+                disabled={isRunning || isSavingSettings}
+              />
+            </div>
+            <div className="form-row-grid">
+              <div className="form-row">
+                <label htmlFor="model">Model</label>
+                <select
+                  id="model"
+                  value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  disabled={isRunning || isSavingSettings || isLoadingModels || availableModels.length === 0}
+                >
+                  {availableModels.length === 0 ? (
+                    <option value={model}>{isLoadingModels ? "Loading models..." : "No models available"}</option>
+                  ) : (
+                    availableModels.map((modelName) => (
+                      <option key={modelName} value={modelName}>
+                        {modelName}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+              <div className="form-row">
+                <label htmlFor="reasoningModel">Reasoning Model</label>
+                <input
+                  id="reasoningModel"
+                  type="text"
+                  value={reasoningModel}
+                  onChange={(event) => setReasoningModel(event.target.value)}
+                  disabled={isRunning || isSavingSettings}
+                />
+              </div>
+            </div>
+            {modelsError ? <div className="status status-error">{modelsError}</div> : null}
+            <div className="actions">
+              <button onClick={handleSaveSettings} disabled={isRunning || isSavingSettings || isLoadingModels}>
+                {isSavingSettings ? "Saving..." : "Save Settings"}
+              </button>
+              <button
+                className="button-secondary"
+                onClick={() => setIsSettingsOpen(false)}
+                disabled={isSavingSettings}
+              >
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

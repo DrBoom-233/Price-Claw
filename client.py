@@ -4,9 +4,19 @@ import json
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Iterable
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
 from pydantic import BaseModel
 from playwright.async_api import Browser, async_playwright
 
@@ -34,6 +44,10 @@ class SettingsPayload(BaseModel):
     apiKey: str
     model: str | None = None
     reasoningModel: str | None = None
+
+
+class ModelsPayload(BaseModel):
+    apiKey: str | None = None
 
 
 class WsContext:
@@ -86,6 +100,40 @@ app.add_middleware(
 )
 
 
+def _is_supported_model(model_id: str) -> bool:
+    normalized = model_id.lower()
+    blocked_prefixes = (
+        "whisper",
+        "tts",
+        "dall",
+        "omni-moderation",
+        "gpt-image",
+        "text-embedding",
+        "embedding",
+    )
+    if normalized.startswith(blocked_prefixes):
+        return False
+
+    allowed_prefixes = ("gpt", "o", "chatgpt")
+    return normalized.startswith(allowed_prefixes)
+
+
+def _extract_model_ids(models: Iterable[object]) -> list[str]:
+    model_ids: list[str] = []
+    for model in models:
+        model_id = str(getattr(model, "id", "")).strip()
+        if model_id and _is_supported_model(model_id):
+            model_ids.append(model_id)
+    # Keep stable, de-duplicated ordering for predictable dropdown display.
+    return sorted(dict.fromkeys(model_ids))
+
+
+def _get_available_models(api_key: str) -> list[str]:
+    client = OpenAI(api_key=api_key)
+    models = client.models.list()
+    return _extract_model_ids(models)
+
+
 @app.get("/")
 def read_root():
     return {
@@ -100,16 +148,50 @@ def get_health():
     return {"ok": True}
 
 
+@app.head("/api/health")
+def head_health():
+    return Response(status_code=200)
+
+
 @app.get("/api/settings")
 def get_settings():
     return get_settings_public_view()
 
 
-@app.post("/api/settings")
-def save_settings(payload: SettingsPayload):
-    api_key = payload.apiKey.strip()
+@app.post("/api/models")
+def get_models(payload: ModelsPayload):
+    runtime = get_runtime_settings()
+    api_key = (payload.apiKey or "").strip() or (runtime.api_key if runtime else "")
     if not api_key:
         raise HTTPException(status_code=400, detail="apiKey is required")
+
+    try:
+        model_ids = _get_available_models(api_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch models: {exc}")
+
+    return {"models": model_ids}
+
+
+@app.post("/api/settings")
+def save_settings(payload: SettingsPayload):
+    runtime = get_runtime_settings()
+    api_key = payload.apiKey.strip() or (runtime.api_key if runtime else "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="apiKey is required")
+
+    selected_model = (payload.model or "").strip()
+    if selected_model:
+        try:
+            model_ids = _get_available_models(api_key)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch models: {exc}")
+
+        if selected_model not in model_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected model '{selected_model}' is not available for this API key",
+            )
 
     save_runtime_settings(
         api_key=api_key,
