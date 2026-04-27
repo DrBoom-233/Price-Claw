@@ -6,8 +6,8 @@
   "scripts": {
     "dev:backend": "uv run python server.py",
     "dev:frontend": "npm --prefix frontend run dev",
-    "dev:electron": "cross-env ELECTRON_START_URL=http://localhost:5173 electron ./electron/main.js",
-    "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\" \"wait-on http://127.0.0.1:8000/api/health http://localhost:5173 && npm run dev:electron\"",
+    "dev:electron": "cross-env ELECTRON_START_URL=http://127.0.0.1:5173 electron ./electron/main.js",
+    "dev": "node ./dev.cjs",
     "build:frontend": "npm --prefix frontend run build",
     "start:electron": "electron ./electron/main.js"
   },

@@ -15,12 +15,32 @@ body {
 }
 
 .layout {
-  max-width: 980px;
+  max-width: 1440px;
   margin: 0 auto;
   padding: 18px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.layout-left-col,
+.layout-right-col {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+@media (min-width: 1024px) {
+  .layout {
+    grid-template-columns: minmax(0, 4fr) minmax(0, 3fr);
+    align-items: start;
+  }
+
+  .layout-right-col {
+    position: sticky;
+    top: 18px;
+    height: calc(100vh - 36px);
+  }
 }
 
 .card {
@@ -116,16 +136,30 @@ button:disabled {
   color: #374151;
 }
 
+.console-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .console {
   background: #111827;
   color: #d1d5db;
   border-radius: 8px;
   padding: 10px;
   height: 310px;
+  min-height: 200px;
+  flex-grow: 1;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+
+@media (min-width: 1024px) {
+  .console {
+    height: auto;
+  }
 }
 
 .log-info {

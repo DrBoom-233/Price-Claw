@@ -8,6 +8,7 @@ const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || "http://127.0.0.1:8000"
 const BACKEND_COMMAND = process.env.BACKEND_COMMAND || "uv";
 const BACKEND_ARGS = (process.env.BACKEND_ARGS || "run python server.py").split(" ");
 const ELECTRON_START_URL = process.env.ELECTRON_START_URL || "";
+const ELECTRON_OPEN_DEVTOOLS = process.env.ELECTRON_OPEN_DEVTOOLS === "1";
 
 let mainWindow = null;
 let backendProcess = null;
@@ -35,7 +36,9 @@ function createMainWindow() {
 
   if (ELECTRON_START_URL) {
     mainWindow.loadURL(ELECTRON_START_URL);
-    mainWindow.webContents.openDevTools({ mode: "detach" });
+    if (ELECTRON_OPEN_DEVTOOLS) {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
   } else {
     mainWindow.loadFile(FRONTEND_DIST_INDEX);
   }

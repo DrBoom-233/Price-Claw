@@ -34,7 +34,7 @@ npm run dev
 This starts:
 
 - FastAPI backend on `http://127.0.0.1:8000`
-- Vite frontend on `http://localhost:5173`
+- Vite frontend on `http://127.0.0.1:5173`
 - Electron desktop window loading the Vite app
 
 ## Run backend only

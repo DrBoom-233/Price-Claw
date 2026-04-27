@@ -411,15 +411,16 @@ function App() {
 
   return (
     <div className="layout">
-      <section className="card">
-        <h1>Price Claw Desktop</h1>
-        <p className="subtitle">Electron + React frontend, FastAPI backend</p>
-        <div className="api-base">Backend: {apiBaseUrl}</div>
-      </section>
+      <div className="layout-left-col">
+        <section className="card">
+          <h1>Price Claw Desktop</h1>
+          <p className="subtitle">Electron + React frontend, FastAPI backend</p>
+          <div className="api-base">Backend: {apiBaseUrl}</div>
+        </section>
 
-      <section className="card">
-        <h2>Settings</h2>
-        <p className="subtitle">
+        <section className="card">
+          <h2>Settings</h2>
+          <p className="subtitle">
           API key is configured in a secure popup and is no longer shown directly on the page.
         </p>
         <div className="actions">
@@ -573,18 +574,21 @@ function App() {
         <button onClick={handleStart} disabled={!canStart}>
           2. Start Extraction Task
         </button>
-      </section>
+        </section>
+      </div>
 
-      <section className="card">
-        <h2>Task Console</h2>
-        <div className="console">
-          {logs.map((line, index) => (
-            <div key={`${line.text}-${index}`} className={`log-${line.type}`}>
-              {line.text}
-            </div>
-          ))}
-        </div>
-      </section>
+      <div className="layout-right-col">
+        <section className="card console-card">
+          <h2>Task Console</h2>
+          <div className="console">
+            {logs.map((line, index) => (
+              <div key={`${line.text}-${index}`} className={`log-${line.type}`}>
+                {line.text}
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
 
       {isSettingsOpen ? (
         <div className="modal-backdrop" role="presentation">
