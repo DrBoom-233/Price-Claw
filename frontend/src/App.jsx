@@ -63,6 +63,13 @@ function App() {
   const [useLlm, setUseLlm] = useState(false);
   const [taskMode, setTaskMode] = useState("uniform");
   const [filePlans, setFilePlans] = useState({});
+  const [isInspectionOpen, setIsInspectionOpen] = useState(false);
+  const [isLoadingInspection, setIsLoadingInspection] = useState(false);
+  const [inspectionError, setInspectionError] = useState("");
+  const [inspectionData, setInspectionData] = useState({ schemas: [], extractions: [] });
+  const [selectedInspectionTab, setSelectedInspectionTab] = useState("prices");
+  const [selectedExtractionId, setSelectedExtractionId] = useState("");
+  const [selectedInspectionSchemaId, setSelectedInspectionSchemaId] = useState("");
   const [logs, setLogs] = useState([{ type: "info", text: "System ready." }]);
 
   const canStart = settingsConfigured && uploadedFilenames.length > 0 && !isRunning;
@@ -84,6 +91,7 @@ function App() {
           body: JSON.stringify(payload)
         }),
       getSchemas: () => fetch(joinUrl(apiBaseUrl, "/api/schemas")),
+      getInspection: () => fetch(joinUrl(apiBaseUrl, "/api/inspection?limit=50")),
       uploadFile: (formData) =>
         fetch(joinUrl(apiBaseUrl, "/api/upload"), {
           method: "POST",
@@ -127,6 +135,86 @@ function App() {
     } finally {
       setIsLoadingSchemas(false);
     }
+  }
+
+  async function loadInspectionData() {
+    try {
+      setIsLoadingInspection(true);
+      setInspectionError("");
+      const response = await api.getInspection();
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load inspection data");
+      }
+
+      const nextExtractions = Array.isArray(data.extractions) ? data.extractions : [];
+      const nextSchemas = Array.isArray(data.schemas) ? data.schemas : [];
+      setInspectionData({ extractions: nextExtractions, schemas: nextSchemas });
+
+      setSelectedExtractionId((current) =>
+        nextExtractions.some((item) => item.id === current) ? current : nextExtractions[0]?.id || ""
+      );
+      setSelectedInspectionSchemaId((current) =>
+        nextSchemas.some((item) => item.id === current) ? current : nextSchemas[0]?.id || ""
+      );
+    } catch (error) {
+      setInspectionError(String(error));
+    } finally {
+      setIsLoadingInspection(false);
+    }
+  }
+
+  function openInspection() {
+    setIsInspectionOpen(true);
+    loadInspectionData();
+  }
+
+  function formatJson(value) {
+    return JSON.stringify(value ?? {}, null, 2);
+  }
+
+  function renderHighlightedJson(value) {
+    const json = formatJson(value);
+    const tokenPattern = /"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = tokenPattern.exec(json)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ text: json.slice(lastIndex, match.index), className: "" });
+      }
+
+      const token = match[0];
+      const afterToken = json.slice(tokenPattern.lastIndex).match(/^\s*:/);
+      let className = "";
+      if (/^"(?:\\.|[^"\\])*"$/.test(token)) {
+        className = afterToken ? "json-key" : "json-string";
+      } else if (/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(token)) {
+        className = "json-number";
+      } else if (token === "true" || token === "false") {
+        className = "json-boolean";
+      } else if (token === "null") {
+        className = "json-null";
+      }
+
+      parts.push({ text: token, className });
+      lastIndex = tokenPattern.lastIndex;
+    }
+
+    if (lastIndex < json.length) {
+      parts.push({ text: json.slice(lastIndex), className: "" });
+    }
+
+    return parts.map((part, index) =>
+      part.className ? (
+        <span key={`${part.text}-${index}`} className={part.className}>
+          {part.text}
+        </span>
+      ) : (
+        part.text
+      )
+    );
   }
 
   useEffect(() => {
@@ -406,8 +494,14 @@ function App() {
     ws.onclose = () => {
       appendLog("WebSocket closed.", "ws");
       setIsRunning(false);
+      if (isInspectionOpen) {
+        loadInspectionData();
+      }
     };
   }
+
+  const selectedExtraction = inspectionData.extractions.find((item) => item.id === selectedExtractionId);
+  const selectedInspectionSchema = inspectionData.schemas.find((item) => item.id === selectedInspectionSchemaId);
 
   return (
     <div className="layout">
@@ -578,6 +672,17 @@ function App() {
       </div>
 
       <div className="layout-right-col">
+        <section className="card">
+          <h2>MongoDB Data</h2>
+          <p className="subtitle">Inspect stored extraction JSON and saved schemas.</p>
+          <div className="actions inspection-entry-actions">
+            <button onClick={openInspection} disabled={isLoadingInspection}>
+              {isLoadingInspection ? "Loading..." : "Inspect Data"}
+            </button>
+          </div>
+          {inspectionError ? <div className="status status-error">{inspectionError}</div> : null}
+        </section>
+
         <section className="card console-card">
           <h2>Task Console</h2>
           <div className="console">
@@ -652,9 +757,94 @@ function App() {
           </section>
         </div>
       ) : null}
+
+      {isInspectionOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card inspection-modal" role="dialog" aria-modal="true" aria-labelledby="inspection-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="inspection-title">MongoDB Inspector</h2>
+                <p className="subtitle">Stored price extraction JSON and schema documents</p>
+              </div>
+              <button className="button-secondary" onClick={() => setIsInspectionOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="tab-bar" role="tablist" aria-label="MongoDB data views">
+              <button
+                className={selectedInspectionTab === "prices" ? "tab-button tab-button-active" : "tab-button"}
+                onClick={() => setSelectedInspectionTab("prices")}
+                type="button"
+              >
+                Price JSON
+              </button>
+              <button
+                className={selectedInspectionTab === "schemas" ? "tab-button tab-button-active" : "tab-button"}
+                onClick={() => setSelectedInspectionTab("schemas")}
+                type="button"
+              >
+                Schemas
+              </button>
+              <button className="button-secondary" onClick={loadInspectionData} disabled={isLoadingInspection} type="button">
+                {isLoadingInspection ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            {inspectionError ? <div className="status status-error">{inspectionError}</div> : null}
+
+            {selectedInspectionTab === "prices" ? (
+              <div className="inspection-grid">
+                <aside className="inspection-list" aria-label="Extraction results">
+                  {inspectionData.extractions.length === 0 ? (
+                    <div className="empty-state">No extraction results in MongoDB.</div>
+                  ) : (
+                    inspectionData.extractions.map((item) => (
+                      <button
+                        key={item.id}
+                        className={item.id === selectedExtractionId ? "list-row list-row-active" : "list-row"}
+                        onClick={() => setSelectedExtractionId(item.id)}
+                        type="button"
+                      >
+                        <span>{item.fileName || "unknown file"}</span>
+                        <small>{item.createdAt || item.taskId || item.id}</small>
+                      </button>
+                    ))
+                  )}
+                </aside>
+                <div className="json-panel">
+                  <pre>{renderHighlightedJson(selectedExtraction?.result || selectedExtraction || {})}</pre>
+                </div>
+              </div>
+            ) : (
+              <div className="inspection-grid">
+                <aside className="inspection-list" aria-label="Schemas">
+                  {inspectionData.schemas.length === 0 ? (
+                    <div className="empty-state">No saved schemas in MongoDB.</div>
+                  ) : (
+                    inspectionData.schemas.map((item) => (
+                      <button
+                        key={item.id}
+                        className={item.id === selectedInspectionSchemaId ? "list-row list-row-active" : "list-row"}
+                        onClick={() => setSelectedInspectionSchemaId(item.id)}
+                        type="button"
+                      >
+                        <span>{item.schemaName || "unnamed schema"}</span>
+                        <small>{item.domain || item.id}</small>
+                      </button>
+                    ))
+                  )}
+                </aside>
+                <div className="json-panel">
+                  <pre>{renderHighlightedJson(selectedInspectionSchema || {})}</pre>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export default App;
-

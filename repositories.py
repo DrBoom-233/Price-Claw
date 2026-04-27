@@ -152,6 +152,11 @@ class ExtractionRepository:
         payload["_id"] = inserted.inserted_id
         return _to_public_id(payload)
 
+    async def list_extractions(self, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 100))
+        cursor = self.collection.find({}).sort("created_at", -1).limit(safe_limit)
+        return [_to_public_id(doc) async for doc in cursor]
+
 
 class TaskRepository:
     def __init__(self, db: AsyncIOMotorDatabase):

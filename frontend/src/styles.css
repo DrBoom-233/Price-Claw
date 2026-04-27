@@ -120,6 +120,11 @@ button:disabled {
   background: #6b7280;
 }
 
+.inspection-entry-actions {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
 .status {
   font-size: 13px;
 }
@@ -197,6 +202,129 @@ button:disabled {
   padding: 16px;
 }
 
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.inspection-modal {
+  width: min(1100px, 100%);
+  max-height: min(760px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.tab-button {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.tab-button-active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.inspection-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.inspection-list {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow-y: auto;
+  min-height: 280px;
+  max-height: 560px;
+  background: #f9fafb;
+}
+
+.list-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  border-radius: 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: transparent;
+  color: #111827;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.list-row:hover,
+.list-row-active {
+  background: #dbeafe;
+}
+
+.list-row small {
+  color: #6b7280;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.json-panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #111827;
+  min-height: 280px;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.json-panel pre {
+  margin: 0;
+  padding: 12px;
+  color: #d1d5db;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-key {
+  color: #93c5fd;
+}
+
+.json-string {
+  color: #86efac;
+}
+
+.json-number {
+  color: #fcd34d;
+}
+
+.json-boolean {
+  color: #c4b5fd;
+}
+
+.json-null {
+  color: #fca5a5;
+}
+
+.empty-state {
+  padding: 14px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
 .table-container {
   overflow-x: auto;
   border-radius: 8px;
@@ -234,5 +362,17 @@ button:disabled {
   .form-row-grid {
     grid-template-columns: 1fr;
   }
-}
 
+  .modal-header {
+    flex-direction: column;
+  }
+
+  .inspection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inspection-list,
+  .json-panel {
+    max-height: 320px;
+  }
+}

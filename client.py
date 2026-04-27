@@ -5,8 +5,10 @@ import shutil
 import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from datetime import date, datetime
 from typing import Any, Iterable
 
+from bson import ObjectId
 from fastapi import (
     FastAPI,
     File,
@@ -213,6 +215,30 @@ def _schema_public_view(schema_doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    return value
+
+
+def _extraction_public_view(extraction_doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": extraction_doc.get("id"),
+        "taskId": extraction_doc.get("task_id"),
+        "fileName": extraction_doc.get("file_name"),
+        "schemaId": extraction_doc.get("schema_id"),
+        "extractionRequest": extraction_doc.get("extraction_request"),
+        "createdAt": extraction_doc.get("created_at"),
+        "result": _json_safe(extraction_doc.get("result", {})),
+    }
+
+
 def _resolve_domain_for_file(path: Path) -> str:
     parsed_domain = extract_domain_from_mhtml(path)
     if parsed_domain:
@@ -368,6 +394,21 @@ async def archive_schema(schema_id: str):
     if not archived:
         raise HTTPException(status_code=404, detail="Schema not found")
     return {"success": True}
+
+
+@app.get("/api/inspection")
+async def get_inspection_data(limit: int = 20):
+    schema_repo = _schema_repo(app)
+    extraction_repo = _extraction_repo(app)
+    if schema_repo is None or extraction_repo is None:
+        raise HTTPException(status_code=503, detail="MongoDB is not available")
+
+    schemas = await schema_repo.list_schemas()
+    extractions = await extraction_repo.list_extractions(limit=limit)
+    return {
+        "schemas": [_json_safe(_schema_public_view(doc)) for doc in schemas],
+        "extractions": [_json_safe(_extraction_public_view(doc)) for doc in extractions],
+    }
 
 
 @app.post("/api/upload")
