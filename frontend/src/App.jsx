@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import Step1 from "../images/Step_1.png";
+import Step2 from "../images/Step_2.png";
+import Step3 from "../images/Step_3.png";
+
+const slides = [Step1, Step2, Step3];
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_REQUEST = "I want to extract all product names and prices";
@@ -95,6 +100,8 @@ function App() {
   const [selectedExtractionId, setSelectedExtractionId] = useState("");
   const [selectedInspectionSchemaId, setSelectedInspectionSchemaId] = useState("");
   const [logs, setLogs] = useState([{ type: "info", text: "System ready." }]);
+  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
+  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
 
   const canStart = settingsConfigured && uploadedFilenames.length > 0 && !isRunning;
   const uploadStatus = uploadedFilenames.length > 0 ? `Uploaded: ${uploadedFilenames.join(", ")}` : "";
@@ -596,6 +603,17 @@ function App() {
       <div className="layout-left-col">
         <section className="card">
           <h1>Price Claw Desktop</h1>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              setIsHelpModalOpen(true);
+              setCurrentSlideIndex(0);
+            }}
+            className="help-link"
+          >
+            Don't know how to use it? Click here.
+          </a>
           <p className="subtitle">Electron + React frontend, FastAPI backend</p>
           <div className="api-base">Backend: {apiBaseUrl}</div>
         </section>
@@ -991,6 +1009,47 @@ function App() {
                 </div>
               </div>
             )}
+          </section>
+        </div>
+      ) : null}
+
+      {isHelpModalOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="help-title">How to use Price Claw</h2>
+              </div>
+              <button className="button-secondary" onClick={() => setIsHelpModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            
+            <div className="slideshow-container">
+              <img 
+                src={slides[currentSlideIndex]} 
+                alt={`Step ${currentSlideIndex + 1}`} 
+                className="slideshow-image" 
+              />
+            </div>
+            
+            <div className="slideshow-controls">
+              <button 
+                className="button-secondary"
+                onClick={() => setCurrentSlideIndex(Math.max(0, currentSlideIndex - 1))}
+                disabled={currentSlideIndex === 0}
+              >
+                Previous
+              </button>
+              <span>Step {currentSlideIndex + 1} of {slides.length}</span>
+              <button 
+                className="button-primary"
+                onClick={() => setCurrentSlideIndex(Math.min(slides.length - 1, currentSlideIndex + 1))}
+                disabled={currentSlideIndex === slides.length - 1}
+              >
+                Next
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
