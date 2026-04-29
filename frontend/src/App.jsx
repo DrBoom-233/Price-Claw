@@ -2,6 +2,27 @@ import { useEffect, useMemo, useState } from "react";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_REQUEST = "I want to extract all product names and prices";
+const PROVIDER_OPTIONS = [
+  { value: "openai", label: "OpenAI" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openai_compatible", label: "OpenAI Compatible" }
+];
+const DEFAULT_PROVIDER_MODELS = {
+  openai: "gpt-4o-mini",
+  claude: "claude-sonnet-4-5",
+  gemini: "gemini-2.5-flash",
+  deepseek: "deepseek-chat",
+  openai_compatible: "gpt-4o-mini"
+};
+const DEFAULT_PROVIDER_BASE_URLS = {
+  openai: "",
+  claude: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  deepseek: "https://api.deepseek.com",
+  openai_compatible: ""
+};
 
 function joinUrl(baseUrl, path) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
@@ -43,9 +64,12 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hasCheckedSettings, setHasCheckedSettings] = useState(false);
 
+  const [configuredProvider, setConfiguredProvider] = useState("openai");
+  const [provider, setProvider] = useState("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4o-mini");
   const [reasoningModel, setReasoningModel] = useState("o4-mini");
+  const [baseUrl, setBaseUrl] = useState("");
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -173,6 +197,50 @@ function App() {
     return JSON.stringify(value ?? {}, null, 2);
   }
 
+  function safeExportFilename(value, fallback) {
+    const cleaned = String(value || fallback)
+      .trim()
+      .replace(/[^a-z0-9._-]+/gi, "_")
+      .replace(/^_+|_+$/g, "");
+    return cleaned || fallback;
+  }
+
+  function exportJson(value, filename) {
+    const blob = new Blob([`${formatJson(value)}\n`], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportSelectedPriceJson() {
+    if (!selectedExtraction) {
+      return;
+    }
+
+    const baseName = safeExportFilename(
+      selectedExtraction.fileName || selectedExtraction.taskId || selectedExtraction.id,
+      "price-info"
+    );
+    exportJson(selectedExtraction.result || selectedExtraction, `${baseName}-price-info.json`);
+  }
+
+  function exportSelectedSchemaJson() {
+    if (!selectedInspectionSchema) {
+      return;
+    }
+
+    const baseName = safeExportFilename(
+      selectedInspectionSchema.schemaName || selectedInspectionSchema.domain || selectedInspectionSchema.id,
+      "schema"
+    );
+    exportJson(selectedInspectionSchema, `${baseName}-schema.json`);
+  }
+
   function renderHighlightedJson(value) {
     const json = formatJson(value);
     const tokenPattern = /"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
@@ -246,11 +314,14 @@ function App() {
         }
 
         setSettingsConfigured(Boolean(data.configured));
+        setConfiguredProvider(data.provider || "openai");
+        setProvider(data.provider || "openai");
         setModel(data.model || "gpt-4o-mini");
         setReasoningModel(data.reasoningModel || "o4-mini");
+        setBaseUrl(data.baseUrl || DEFAULT_PROVIDER_BASE_URLS[data.provider || "openai"] || "");
 
         if (data.configured) {
-          setSettingsStatus(`Configured (${data.apiKeyMasked})`);
+          setSettingsStatus(`Configured ${data.provider || "openai"} (${data.apiKeyMasked})`);
           setSettingsStatusType("success");
           setIsSettingsOpen(false);
         } else {
@@ -296,7 +367,11 @@ function App() {
       try {
         setIsLoadingModels(true);
         setModelsError("");
-        const response = await api.getModels({ apiKey: apiKey.trim() || undefined });
+        const response = await api.getModels({
+          provider,
+          apiKey: apiKey.trim() || undefined,
+          baseUrl
+        });
         const data = await response.json();
         if (cancelled) {
           return;
@@ -307,8 +382,8 @@ function App() {
 
         const models = Array.isArray(data.models) ? data.models : [];
         setAvailableModels(models);
-        if (models.length > 0 && !models.includes(model)) {
-          setModel(models[0]);
+        if (data.warning) {
+          setModelsError(data.warning);
         }
       } catch (error) {
         if (cancelled) {
@@ -327,12 +402,25 @@ function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [api, apiKey, isSettingsOpen, model, settingsConfigured]);
+  }, [api, apiKey, baseUrl, isSettingsOpen, provider, settingsConfigured]);
+
+  function handleProviderChange(nextProvider) {
+    setProvider(nextProvider);
+    setModel(DEFAULT_PROVIDER_MODELS[nextProvider] || "");
+    setReasoningModel(DEFAULT_PROVIDER_MODELS[nextProvider] || "");
+    setBaseUrl(DEFAULT_PROVIDER_BASE_URLS[nextProvider] || "");
+    setAvailableModels([]);
+    setModelsError("");
+  }
 
   async function handleSaveSettings() {
     const trimmedApiKey = apiKey.trim();
     if (!settingsConfigured && !trimmedApiKey) {
       appendLog("Please input API key before saving.", "error");
+      return;
+    }
+    if (settingsConfigured && provider !== configuredProvider && !trimmedApiKey) {
+      appendLog("Please input API key when changing provider.", "error");
       return;
     }
 
@@ -346,17 +434,14 @@ function App() {
       return;
     }
 
-    if (modelsError) {
-      appendLog("Please fix model loading error before saving.", "error");
-      return;
-    }
-
     setIsSavingSettings(true);
     try {
       const response = await api.saveSettings({
         apiKey: trimmedApiKey || apiKey,
+        provider,
         model,
-        reasoningModel
+        reasoningModel,
+        baseUrl
       });
       const data = await response.json();
       if (!response.ok) {
@@ -365,7 +450,10 @@ function App() {
 
       setApiKey("");
       setSettingsConfigured(Boolean(data.configured));
-      setSettingsStatus(`Configured (${data.apiKeyMasked})`);
+      setConfiguredProvider(data.provider || provider);
+      setProvider(data.provider || provider);
+      setBaseUrl(data.baseUrl || baseUrl);
+      setSettingsStatus(`Configured ${data.provider || provider} (${data.apiKeyMasked})`);
       setSettingsStatusType("success");
       setIsSettingsOpen(false);
       appendLog("Settings saved.", "success");
@@ -698,45 +786,72 @@ function App() {
       {isSettingsOpen ? (
         <div className="modal-backdrop" role="presentation">
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-            <h2 id="settings-title">OpenAI Settings</h2>
+            <h2 id="settings-title">LLM Settings</h2>
+            <div className="form-row-grid">
+              <div className="form-row">
+                <label htmlFor="provider">Provider</label>
+                <select
+                  id="provider"
+                  value={provider}
+                  onChange={(event) => handleProviderChange(event.target.value)}
+                  disabled={isRunning || isSavingSettings}
+                >
+                  {PROVIDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-row">
+                <label htmlFor="apiKey">API Key</label>
+                <input
+                  id="apiKey"
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={settingsConfigured && provider === configuredProvider ? "Leave empty to keep current key" : "API key"}
+                  disabled={isRunning || isSavingSettings}
+                />
+              </div>
+            </div>
             <div className="form-row">
-              <label htmlFor="apiKey">OpenAI API Key</label>
+              <label htmlFor="baseUrl">Base URL</label>
               <input
-                id="apiKey"
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder={settingsConfigured ? "Leave empty to keep current key" : "sk-..."}
+                id="baseUrl"
+                type="text"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder={DEFAULT_PROVIDER_BASE_URLS[provider] || "https://api.example.com/v1"}
                 disabled={isRunning || isSavingSettings}
               />
             </div>
             <div className="form-row-grid">
               <div className="form-row">
                 <label htmlFor="model">Model</label>
-                <select
+                <input
                   id="model"
+                  type="text"
                   value={model}
                   onChange={(event) => setModel(event.target.value)}
-                  disabled={isRunning || isSavingSettings || isLoadingModels || availableModels.length === 0}
-                >
-                  {availableModels.length === 0 ? (
-                    <option value={model}>{isLoadingModels ? "Loading models..." : "No models available"}</option>
-                  ) : (
-                    availableModels.map((modelName) => (
-                      <option key={modelName} value={modelName}>
-                        {modelName}
-                      </option>
-                    ))
-                  )}
-                </select>
+                  list="available-models"
+                  placeholder={DEFAULT_PROVIDER_MODELS[provider] || "model-name"}
+                  disabled={isRunning || isSavingSettings}
+                />
+                <datalist id="available-models">
+                  {availableModels.map((modelName) => (
+                    <option key={modelName} value={modelName} />
+                  ))}
+                </datalist>
               </div>
               <div className="form-row">
-                <label htmlFor="reasoningModel">Reasoning Model</label>
+                <label htmlFor="reasoningModel">Schema Model</label>
                 <input
                   id="reasoningModel"
                   type="text"
                   value={reasoningModel}
                   onChange={(event) => setReasoningModel(event.target.value)}
+                  placeholder={model || DEFAULT_PROVIDER_MODELS[provider]}
                   disabled={isRunning || isSavingSettings}
                 />
               </div>
@@ -812,8 +927,24 @@ function App() {
                     ))
                   )}
                 </aside>
-                <div className="json-panel">
-                  <pre>{renderHighlightedJson(selectedExtraction?.result || selectedExtraction || {})}</pre>
+                <div className="json-detail">
+                  <div className="json-detail-header">
+                    <div>
+                      <strong>Selected Price Info</strong>
+                      <span>{selectedExtraction?.fileName || selectedExtraction?.taskId || "No price info selected"}</span>
+                    </div>
+                    <button
+                      className="export-button"
+                      onClick={exportSelectedPriceJson}
+                      disabled={!selectedExtraction}
+                      type="button"
+                    >
+                      Export This Price JSON
+                    </button>
+                  </div>
+                  <div className="json-panel">
+                    <pre>{renderHighlightedJson(selectedExtraction?.result || selectedExtraction || {})}</pre>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -835,8 +966,28 @@ function App() {
                     ))
                   )}
                 </aside>
-                <div className="json-panel">
-                  <pre>{renderHighlightedJson(selectedInspectionSchema || {})}</pre>
+                <div className="json-detail">
+                  <div className="json-detail-header">
+                    <div>
+                      <strong>Selected Schema</strong>
+                      <span>
+                        {selectedInspectionSchema
+                          ? `${selectedInspectionSchema.schemaName || "unnamed schema"} (${selectedInspectionSchema.domain || "unknown domain"})`
+                          : "No schema selected"}
+                      </span>
+                    </div>
+                    <button
+                      className="export-button"
+                      onClick={exportSelectedSchemaJson}
+                      disabled={!selectedInspectionSchema}
+                      type="button"
+                    >
+                      Export This Schema
+                    </button>
+                  </div>
+                  <div className="json-panel">
+                    <pre>{renderHighlightedJson(selectedInspectionSchema || {})}</pre>
+                  </div>
                 </div>
               </div>
             )}

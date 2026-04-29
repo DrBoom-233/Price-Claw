@@ -6,7 +6,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any
 
 from bson import ObjectId
 from fastapi import (
@@ -19,7 +19,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
 from pydantic import BaseModel
 from playwright.async_api import Browser, async_playwright
 
@@ -31,6 +30,11 @@ from app_settings import (
 )
 from db import close_mongo, init_mongo
 from domain_utils import domain_from_filename, extract_domain_from_mhtml
+from llm_client import (
+    default_model_suggestions,
+    list_available_models,
+    normalize_provider,
+)
 from pipeline_service import (
     build_extraction_schema,
     capture_mhtml_screenshots,
@@ -68,12 +72,16 @@ def _consume_playwright_driver_errors(playwright: Any) -> None:
 
 class SettingsPayload(BaseModel):
     apiKey: str
+    provider: str | None = None
     model: str | None = None
     reasoningModel: str | None = None
+    baseUrl: str | None = None
 
 
 class ModelsPayload(BaseModel):
     apiKey: str | None = None
+    provider: str | None = None
+    baseUrl: str | None = None
 
 
 class SchemaUpdatePayload(BaseModel):
@@ -150,40 +158,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def _is_supported_model(model_id: str) -> bool:
-    normalized = model_id.lower()
-    blocked_prefixes = (
-        "whisper",
-        "tts",
-        "dall",
-        "omni-moderation",
-        "gpt-image",
-        "text-embedding",
-        "embedding",
-    )
-    if normalized.startswith(blocked_prefixes):
-        return False
-
-    allowed_prefixes = ("gpt", "o", "chatgpt")
-    return normalized.startswith(allowed_prefixes)
-
-
-def _extract_model_ids(models: Iterable[object]) -> list[str]:
-    model_ids: list[str] = []
-    for model in models:
-        model_id = str(getattr(model, "id", "")).strip()
-        if model_id and _is_supported_model(model_id):
-            model_ids.append(model_id)
-    # Keep stable, de-duplicated ordering for predictable dropdown display.
-    return sorted(dict.fromkeys(model_ids))
-
-
-def _get_available_models(api_key: str) -> list[str]:
-    client = OpenAI(api_key=api_key)
-    models = client.models.list()
-    return _extract_model_ids(models)
 
 
 def _schema_repo(app: FastAPI) -> SchemaRepository | None:
@@ -287,14 +261,21 @@ def get_settings():
 @app.post("/api/models")
 def get_models(payload: ModelsPayload):
     runtime = get_runtime_settings()
+    provider = normalize_provider(payload.provider or (runtime.provider if runtime else "openai"))
     api_key = (payload.apiKey or "").strip() or (runtime.api_key if runtime else "")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="apiKey is required")
+    base_url = (
+        payload.baseUrl
+        if payload.baseUrl is not None
+        else (runtime.base_url if runtime else None)
+    )
 
     try:
-        model_ids = _get_available_models(api_key)
+        model_ids = list_available_models(provider=provider, api_key=api_key, base_url=base_url)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch models: {exc}")
+        return {
+            "models": default_model_suggestions(provider),
+            "warning": f"Failed to fetch live model list: {exc}",
+        }
 
     return {"models": model_ids}
 
@@ -302,27 +283,19 @@ def get_models(payload: ModelsPayload):
 @app.post("/api/settings")
 def save_settings(payload: SettingsPayload):
     runtime = get_runtime_settings()
+    provider = normalize_provider(payload.provider or (runtime.provider if runtime else "openai"))
+    if runtime is not None and provider != runtime.provider and not payload.apiKey.strip():
+        raise HTTPException(status_code=400, detail="apiKey is required when changing provider")
     api_key = payload.apiKey.strip() or (runtime.api_key if runtime else "")
     if not api_key:
         raise HTTPException(status_code=400, detail="apiKey is required")
 
-    selected_model = (payload.model or "").strip()
-    if selected_model:
-        try:
-            model_ids = _get_available_models(api_key)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Failed to fetch models: {exc}")
-
-        if selected_model not in model_ids:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Selected model '{selected_model}' is not available for this API key",
-            )
-
     save_runtime_settings(
         api_key=api_key,
+        provider=provider,
         model=payload.model,
         reasoning_model=payload.reasoningModel,
+        base_url=payload.baseUrl,
     )
     view = get_settings_public_view()
     view["message"] = "Settings saved"
@@ -448,7 +421,7 @@ async def run_pipeline(
         await websocket.send_json(
             {
                 "type": "fatal",
-                "message": "OpenAI API key is not configured. Please save it in Settings first.",
+                "message": "LLM API key is not configured. Please save it in Settings first.",
             }
         )
         return

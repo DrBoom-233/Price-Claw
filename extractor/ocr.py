@@ -9,6 +9,7 @@ from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Union
 import config
+from llm_client import LLMClient, normalize_provider
 
 # Path constants
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -57,7 +58,12 @@ def get_image_files() -> List[Path]:
     
     return list(PUBLIC_DIR.glob("*.png")) + list(PUBLIC_DIR.glob("*.jpg")) + list(PUBLIC_DIR.glob("*.jpeg"))
 
-def setup_llm_client(api_key: str, model: str, api_base_url: Optional[str] = None, service_type: str = "openai"):
+def setup_llm_client(
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    api_base_url: Optional[str] = None,
+    service_type: Optional[str] = None,
+):
     """
     Initialize the LLM client
     
@@ -67,22 +73,12 @@ def setup_llm_client(api_key: str, model: str, api_base_url: Optional[str] = Non
         api_base_url: API base URL (optional)
         service_type: Service type, "openai" or "deepseek"
     """
-    from openai import OpenAI
-    
-    if service_type.lower() == "openai":
-        # Use OpenAI's API, ignore custom base_url
-        return OpenAI(api_key=api_key)
-    elif service_type.lower() == "deepseek":
-        # Use DeepSeek's API, requires custom base_url
-        if not api_base_url:
-            raise ValueError("Using DeepSeek service requires providing an API base URL")
-        return OpenAI(api_key=api_key, base_url=api_base_url)
-    else:
-        # Default behavior remains unchanged
-        if api_base_url:
-            return OpenAI(api_key=api_key, base_url=api_base_url)
-        else:
-            return OpenAI(api_key=api_key)
+    return LLMClient(
+        provider=service_type or config.LLM_PROVIDER,
+        api_key=api_key,
+        model=model,
+        base_url=api_base_url,
+    )
 
 def extract_text_from_image(image_path: Path) -> str:
     """
@@ -91,13 +87,12 @@ def extract_text_from_image(image_path: Path) -> str:
     image = Image.open(image_path)
     return pytesseract.image_to_string(image, lang='eng')
 
-def extract_name_info(text: str, client, model: str) -> List[Dict[str, str]]:
+def extract_name_info(text: str, client, model: str | None = None) -> List[Dict[str, str]]:
     """
     Extract product name information from text
     """
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    name_response = client.chat_text(
+        [
             {"role": "system", "content": "You are an information extraction assistant."},
             {"role": "user", "content": text},
             {"role": "system",
@@ -109,8 +104,6 @@ def extract_name_info(text: str, client, model: str) -> List[Dict[str, str]]:
                         "json format should be like{order:, item: }"}
         ]
     )
-    
-    name_response = response.choices[0].message.content
     cleaned_response = re.sub(r'```json|```', '', name_response).strip()
     
     try:
@@ -124,13 +117,12 @@ def extract_name_info(text: str, client, model: str) -> List[Dict[str, str]]:
     except json.JSONDecodeError:
         return []
 
-def extract_price_info(text: str, client, model: str) -> List[Dict[str, str]]:
+def extract_price_info(text: str, client, model: str | None = None) -> List[Dict[str, str]]:
     """
     Extract price information from text
     """
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    price_response = client.chat_text(
+        [
             {"role": "system", "content": "You are an information extraction assistant."},
             {"role": "user", "content": text},
             {"role": "system",
@@ -140,8 +132,6 @@ def extract_price_info(text: str, client, model: str) -> List[Dict[str, str]]:
                         "json format should be like{order:, price: }"}
         ]
     )
-    
-    price_response = response.choices[0].message.content
     cleaned_response = re.sub(r'```json|```', '', price_response).strip()
     
     try:
@@ -166,7 +156,7 @@ def save_json_data(data: List[Dict[str, Any]], file_path: Path) -> bool:
     except Exception:
         return False
 
-async def process_ocr_name(ctx, service_type: str = "openai") -> bool:
+async def process_ocr_name(ctx, service_type: str | None = None) -> bool:
     """
     Process the OCR extraction workflow for product names
     
@@ -182,23 +172,20 @@ async def process_ocr_name(ctx, service_type: str = "openai") -> bool:
     
     await ctx.info("Tesseract OCR is configured")
     
-    # Get configuration based on service type
-    if service_type.lower() == "openai":
-        api_key = config.OPENAI_API_KEY
-        model = config.OPENAI_MODEL
-        api_base_url = None
-    elif service_type.lower() == "deepseek":
-        api_key = config.API_KEY  # DeepSeek API key
-        model = config.CHAT_MODEL  # DeepSeek chat model
-        api_base_url = config.URL  # DeepSeek API URL
-    else:
-        # Default behavior remains unchanged
-        api_key = config.OPENAI_API_KEY
-        model = config.OPENAI_MODEL
-        api_base_url = getattr(config, "URL", None)
+    provider = normalize_provider(service_type or config.LLM_PROVIDER)
+    api_key = (
+        config.LLM_API_KEY
+        or (config.ANTHROPIC_API_KEY if provider == "claude" else None)
+        or (config.GEMINI_API_KEY if provider == "gemini" else None)
+        or (config.GOOGLE_API_KEY if provider == "gemini" else None)
+        or (config.API_KEY if provider == "deepseek" else None)
+        or config.OPENAI_API_KEY
+    )
+    model = config.LLM_MODEL or (config.CHAT_MODEL if provider == "deepseek" else None) or config.OPENAI_MODEL
+    api_base_url = config.LLM_BASE_URL or (config.URL if provider == "deepseek" else None)
     
     if not api_key:
-        await ctx.error("API_KEY is not set in config.py or not found in environment variables")
+        await ctx.error("LLM API key is not configured")
         return False
     
     # Get image files
@@ -211,8 +198,8 @@ async def process_ocr_name(ctx, service_type: str = "openai") -> bool:
     
     # Initialize client
     try:
-        client = setup_llm_client(api_key, model, api_base_url, service_type)
-        await ctx.info(f"Using service: {service_type}, model: {model}" + (f" and custom API URL: {api_base_url}" if api_base_url else ""))
+        client = setup_llm_client(api_key, model, api_base_url, provider)
+        await ctx.info(f"Using service: {provider}, model: {client.model}" + (f" and custom API URL: {client.base_url}" if client.base_url else ""))
     except Exception as e:
         await ctx.error(f"Failed to initialize LLM client: {e}")
         return False
@@ -256,7 +243,7 @@ async def process_ocr_name(ctx, service_type: str = "openai") -> bool:
         await ctx.warning("No name information extracted")
         return False
 
-async def process_ocr_price(ctx, service_type: str = "openai") -> bool:
+async def process_ocr_price(ctx, service_type: str | None = None) -> bool:
     """
     Process the OCR extraction workflow for product prices
     
@@ -272,23 +259,20 @@ async def process_ocr_price(ctx, service_type: str = "openai") -> bool:
     
     await ctx.info("Tesseract OCR is configured")
     
-    # Get configuration based on service type
-    if service_type.lower() == "openai":
-        api_key = config.OPENAI_API_KEY
-        model = config.OPENAI_MODEL
-        api_base_url = None
-    elif service_type.lower() == "deepseek":
-        api_key = config.API_KEY  # DeepSeek API key
-        model = config.CHAT_MODEL  # DeepSeek chat model
-        api_base_url = config.URL  # DeepSeek API URL
-    else:
-        # Default behavior remains unchanged
-        api_key = config.OPENAI_API_KEY
-        model = config.OPENAI_MODEL
-        api_base_url = getattr(config, "URL", None)
+    provider = normalize_provider(service_type or config.LLM_PROVIDER)
+    api_key = (
+        config.LLM_API_KEY
+        or (config.ANTHROPIC_API_KEY if provider == "claude" else None)
+        or (config.GEMINI_API_KEY if provider == "gemini" else None)
+        or (config.GOOGLE_API_KEY if provider == "gemini" else None)
+        or (config.API_KEY if provider == "deepseek" else None)
+        or config.OPENAI_API_KEY
+    )
+    model = config.LLM_MODEL or (config.CHAT_MODEL if provider == "deepseek" else None) or config.OPENAI_MODEL
+    api_base_url = config.LLM_BASE_URL or (config.URL if provider == "deepseek" else None)
     
     if not api_key:
-        await ctx.error("API_KEY is not set in config.py or not found in environment variables")
+        await ctx.error("LLM API key is not configured")
         return False
     
     # Get image files
@@ -301,8 +285,8 @@ async def process_ocr_price(ctx, service_type: str = "openai") -> bool:
     
     # Initialize client
     try:
-        client = setup_llm_client(api_key, model, api_base_url, service_type)
-        await ctx.info(f"Using service: {service_type}, model: {model}" + (f" and custom API URL: {api_base_url}" if api_base_url else ""))
+        client = setup_llm_client(api_key, model, api_base_url, provider)
+        await ctx.info(f"Using service: {provider}, model: {client.model}" + (f" and custom API URL: {client.base_url}" if client.base_url else ""))
     except Exception as e:
         await ctx.error(f"Failed to initialize LLM client: {e}")
         return False

@@ -22,6 +22,7 @@ import glob
 
 # 导入配置
 import config
+from llm_client import LLMClient
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -69,7 +70,7 @@ class CssSelectorGenerator:
             model: LLM模型名称，如果为None则从环境变量获取
         """
         # 从配置或参数获取API密钥和模型
-        self.api_key = api_key or config.OPENAI_API_KEY_FOR_REASONING
+        self.api_key = api_key or config.LLM_API_KEY or config.OPENAI_API_KEY_FOR_REASONING
         self.model = model or config.OPENAI_REASONING_MODEL
         self.url = config.URL
         
@@ -78,7 +79,13 @@ class CssSelectorGenerator:
             
         # 初始化OpenAI客户端
         # self.client = openai.OpenAI(api_key=self.api_key, base_url=self.url)
-        self.client = openai.OpenAI(api_key=self.api_key)
+        self.client = LLMClient(
+            provider=config.LLM_PROVIDER,
+            api_key=api_key,
+            model=model or config.LLM_REASONING_MODEL or config.OPENAI_REASONING_MODEL,
+            base_url=config.LLM_BASE_URL,
+        )
+        self.model = self.client.model
 
         # 指定项目路径
         self.base_path = Path(__file__).parent
@@ -157,16 +164,12 @@ class CssSelectorGenerator:
     """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text = self.client.chat_text(
+                [
                     {"role": "system", "content": "You are a data extraction expert capable of converting natural language requests into structured extraction fields."},
                     {"role": "user", "content": prompt}
-                ],
-                # temperature=0.1  # Low temperature for more deterministic responses
+                ]
             )
-            
-            result_text = response.choices[0].message.content
             
             # 尝试提取JSON数组
             try:
@@ -257,17 +260,14 @@ class CssSelectorGenerator:
         # 调用OpenAI API
         try:
             logger.info("正在请求LLM生成CSS选择器...")
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            result_text = self.client.chat_text(
+                [
                     {"role": "system", "content": "You are a professional web data extraction expert, proficient in HTML analysis and CSS selector creation."},
                     {"role": "user", "content": prompt}
-                ],
-                # temperature=0.2  # Low temperature for more deterministic responses
+                ]
             )
             
             # 提取回答文本
-            result_text = response.choices[0].message.content
             
             # 尝试从回答中提取JSON
             try:
