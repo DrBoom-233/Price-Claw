@@ -331,9 +331,11 @@ from typing import Tuple  # 需要在后面继续使用
 async def get_mhtml_file(file_path: str | None = None) -> Path:
     """Get the MHTML file to be processed"""
     if file_path:
-        fp = Path(file_path)
+        fp = Path(file_path).expanduser()
     else:
         fp = next(MHTML_DIR.glob("*.mhtml"), None)  # type: ignore[assignment]
+    if fp:
+        fp = fp.resolve()
     if not fp or not fp.exists():
         raise FileNotFoundError(f"Cannot find relevant MHTML file: {fp}")
     return fp
@@ -341,6 +343,7 @@ async def get_mhtml_file(file_path: str | None = None) -> Path:
 
 async def get_html_content(file_path: Path) -> str:
     """Use Playwright async API to load the MHTML file and retrieve HTML content"""
+    file_path = file_path.expanduser().resolve()
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(headless=True)
     page = await browser.new_page()
@@ -383,7 +386,9 @@ async def load_item_info(ctx, key: str = 'item') -> List[str]:
         with open(item_info_path, 'r', encoding='utf-8') as f:
             try:
                 item_data = json.load(f)
-                product_names = [str(item.get(key, '')) for item in item_data if key in item]
+                product_names = []
+                if isinstance(item_data, list):
+                    product_names = [str(item.get(key, '')) for item in item_data if isinstance(item, dict) and key in item]
                 await ctx.info(f"Found {len(product_names)} {key} entries")
                 return product_names
             except json.JSONDecodeError as e:
@@ -668,7 +673,7 @@ async def process_name_tag_location(ctx, file_path: str | None = None) -> bool:
                 await ctx.error("Neither 'item' nor 'price' field found")
                 return False
         
-        field_type = 'item' if 'item' in str(product_names[0]) else 'price'
+        field_type = 'item'
         result = await process_tag_location(ctx, product_names, file_path, data_field=field_type)
         if result:
             await ctx.info("Product name tag location completed")

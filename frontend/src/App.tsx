@@ -90,6 +90,8 @@ function App() {
           selectedFiles={extraction.selectedFiles}
           uploadedFilenames={extraction.uploadedFilenames}
           isUploading={extraction.isUploading}
+          mhtmlUrls={extraction.mhtmlUrls}
+          isDownloadingMhtml={extraction.isDownloadingMhtml}
           isRunning={extraction.isRunning}
           requestText={extraction.requestText}
           schemas={schemas.schemas}
@@ -103,6 +105,10 @@ function App() {
           uploadStatus={extraction.uploadStatus}
           onSelectedFilesChange={extraction.setSelectedFiles}
           onUpload={extraction.handleUpload}
+          onMhtmlUrlChange={extraction.handleMhtmlUrlChange}
+          onAddMhtmlUrl={extraction.addMhtmlUrlInput}
+          onRemoveMhtmlUrl={extraction.removeMhtmlUrlInput}
+          onDownloadMhtml={extraction.handleDownloadMhtml}
           onTaskModeChange={extraction.setTaskMode}
           onSelectedSchemaIdChange={schemas.setSelectedSchemaId}
           onLoadSchemas={schemas.loadSchemas}

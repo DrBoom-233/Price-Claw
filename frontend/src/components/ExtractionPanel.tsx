@@ -5,6 +5,8 @@ interface ExtractionPanelProps {
   selectedFiles: File[];
   uploadedFilenames: string[];
   isUploading: boolean;
+  mhtmlUrls: string[];
+  isDownloadingMhtml: boolean;
   isRunning: boolean;
   requestText: string;
   schemas: SchemaSummary[];
@@ -18,6 +20,10 @@ interface ExtractionPanelProps {
   uploadStatus: string;
   onSelectedFilesChange: (files: File[]) => void;
   onUpload: () => void;
+  onMhtmlUrlChange: (index: number, value: string) => void;
+  onAddMhtmlUrl: () => void;
+  onRemoveMhtmlUrl: (index: number) => void;
+  onDownloadMhtml: () => void;
   onTaskModeChange: (mode: TaskMode) => void;
   onSelectedSchemaIdChange: (schemaId: string) => void;
   onLoadSchemas: () => void;
@@ -31,6 +37,8 @@ export function ExtractionPanel({
   selectedFiles,
   uploadedFilenames,
   isUploading,
+  mhtmlUrls,
+  isDownloadingMhtml,
   isRunning,
   requestText,
   schemas,
@@ -44,6 +52,10 @@ export function ExtractionPanel({
   uploadStatus,
   onSelectedFilesChange,
   onUpload,
+  onMhtmlUrlChange,
+  onAddMhtmlUrl,
+  onRemoveMhtmlUrl,
+  onDownloadMhtml,
   onTaskModeChange,
   onSelectedSchemaIdChange,
   onLoadSchemas,
@@ -61,12 +73,59 @@ export function ExtractionPanel({
           accept=".mhtml"
           multiple
           onChange={(event) => onSelectedFilesChange(Array.from(event.target.files || []))}
-          disabled={isRunning || isUploading}
+          disabled={isRunning || isUploading || isDownloadingMhtml}
         />
-        <button onClick={onUpload} disabled={isRunning || isUploading || selectedFiles.length === 0}>
+        <button onClick={onUpload} disabled={isRunning || isUploading || isDownloadingMhtml || selectedFiles.length === 0}>
           {isUploading ? "Uploading..." : "1. Upload File"}
         </button>
       </div>
+
+      <div className="url-download-panel">
+        <div className="url-download-header">
+          <label>URL Download</label>
+          <button
+            className="icon-button"
+            onClick={onAddMhtmlUrl}
+            disabled={isRunning || isDownloadingMhtml}
+            type="button"
+            title="Add URL"
+            aria-label="Add URL"
+          >
+            +
+          </button>
+        </div>
+        <div className="url-input-list">
+          {mhtmlUrls.map((url, index) => (
+            <div className="url-input-row" key={index}>
+              <input
+                type="url"
+                value={url}
+                placeholder="https://example.com/product-page"
+                onChange={(event) => onMhtmlUrlChange(index, event.target.value)}
+                disabled={isRunning || isDownloadingMhtml}
+              />
+              <button
+                className="icon-button button-secondary"
+                onClick={() => onRemoveMhtmlUrl(index)}
+                disabled={isRunning || isDownloadingMhtml || mhtmlUrls.length <= 1}
+                type="button"
+                title="Remove URL"
+                aria-label="Remove URL"
+              >
+                -
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={onDownloadMhtml}
+          disabled={isRunning || isUploading || isDownloadingMhtml || mhtmlUrls.every((url) => url.trim() === "")}
+          type="button"
+        >
+          {isDownloadingMhtml ? "Downloading MHTML..." : "Download MHTML from URL"}
+        </button>
+      </div>
+
       <div className="form-row">
         <label htmlFor="taskMode">Task Mode</label>
         <div className="actions">
