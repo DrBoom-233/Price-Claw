@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from bson import ObjectId
 from fastapi import (
@@ -82,6 +84,10 @@ class ModelsPayload(BaseModel):
     apiKey: str | None = None
     provider: str | None = None
     baseUrl: str | None = None
+
+
+class MhtmlDownloadPayload(BaseModel):
+    urls: list[str]
 
 
 class SchemaUpdatePayload(BaseModel):
@@ -226,12 +232,96 @@ def _safe_schema_filename(value: str) -> str:
     return cleaned or "schema"
 
 
+def _safe_mhtml_filename_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+    cleaned = cleaned.strip("._")
+    return cleaned or "page"
+
+
+def _generate_mhtml_filename(url: str) -> str:
+    parsed = urlparse(url)
+    host = _safe_mhtml_filename_part((parsed.hostname or "unknown").replace(".", "_"))
+    path_parts = [unquote(part) for part in parsed.path.split("/") if part]
+    last_segment = _safe_mhtml_filename_part(path_parts[-1] if path_parts else "page")
+    date_str = datetime.now().strftime("%Y%m%d")
+    return f"{host}_{last_segment}_{date_str}.mhtml"
+
+
+def _unique_mhtml_path(filename: str) -> Path:
+    MHTML_DIR.mkdir(parents=True, exist_ok=True)
+    path = MHTML_DIR / filename
+    if not path.exists():
+        return path
+
+    stem = path.stem
+    suffix = path.suffix
+    while True:
+        candidate = MHTML_DIR / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        if not candidate.exists():
+            return candidate
+
+
+def _normalize_download_urls(urls: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        url = str(raw_url).strip()
+        if not url or url in seen:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only valid http:// or https:// URLs are supported: {url}",
+            )
+        normalized.append(url)
+        seen.add(url)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="At least one URL is required")
+    return normalized
+
+
 def _materialize_schema_config(schema_name: str, selectors_config: dict[str, Any]) -> str:
     TEMP_SCHEMA_DIR.mkdir(parents=True, exist_ok=True)
     file_name = f"{_safe_schema_filename(schema_name)}_{uuid.uuid4().hex}.json"
     path = TEMP_SCHEMA_DIR / file_name
     path.write_text(json.dumps(selectors_config, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
+
+
+async def _download_url_as_mhtml(context: Any, url: str) -> dict[str, Any]:
+    page = await context.new_page()
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        with suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=10000)
+
+        cdp_session = await context.new_cdp_session(page)
+        snapshot = await cdp_session.send(
+            "Page.captureSnapshot",
+            {"format": "mhtml"},
+        )
+        mhtml_data = str(snapshot.get("data", ""))
+        if not mhtml_data:
+            raise RuntimeError("Chromium returned an empty MHTML snapshot")
+
+        path = _unique_mhtml_path(_generate_mhtml_filename(url))
+        path.write_text(mhtml_data, encoding="utf-8")
+        return {
+            "url": url,
+            "filename": path.name,
+            "success": True,
+        }
+    except Exception as exc:
+        return {
+            "url": url,
+            "filename": None,
+            "success": False,
+            "error": str(exc),
+        }
+    finally:
+        with suppress(Exception):
+            await page.close()
 
 
 @app.get("/")
@@ -403,6 +493,39 @@ async def upload_file(file: list[UploadFile] = File(...)):
         "filename": uploaded_filenames[0],
         "filenames": uploaded_filenames,
         "message": f"Upload successful: {len(uploaded_filenames)} file(s)",
+    }
+
+
+@app.post("/api/download-mhtml")
+async def download_mhtml(payload: MhtmlDownloadPayload):
+    urls = _normalize_download_urls(payload.urls)
+    playwright = getattr(app.state, "playwright", None)
+    if playwright is None:
+        raise HTTPException(status_code=503, detail="Playwright is not available")
+
+    browser = await playwright.chromium.launch(headless=False)
+    try:
+        context = await browser.new_context(accept_downloads=True)
+        try:
+            files = await asyncio.gather(
+                *[_download_url_as_mhtml(context, url) for url in urls]
+            )
+        finally:
+            with suppress(Exception):
+                await context.close()
+    finally:
+        with suppress(Exception):
+            await browser.close()
+
+    filenames = [
+        str(item.get("filename"))
+        for item in files
+        if item.get("success") and item.get("filename")
+    ]
+    return {
+        "filenames": filenames,
+        "files": files,
+        "message": f"Downloaded {len(filenames)}/{len(urls)} MHTML file(s)",
     }
 
 

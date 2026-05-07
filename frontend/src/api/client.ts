@@ -1,6 +1,7 @@
 import { DEFAULT_API_BASE_URL } from "../config/providers";
 import type {
   InspectionResponse,
+  MhtmlDownloadResponse,
   ModelsPayload,
   ModelsResponse,
   SchemasResponse,
@@ -56,6 +57,7 @@ export interface ApiClient {
   getSchemas: () => Promise<SchemasResponse>;
   getInspection: () => Promise<InspectionResponse>;
   uploadFile: (formData: FormData) => Promise<UploadResponse>;
+  downloadMhtml: (urls: string[]) => Promise<MhtmlDownloadResponse>;
 }
 
 export function createApiClient(apiBaseUrl: string): ApiClient {
@@ -94,6 +96,14 @@ export function createApiClient(apiBaseUrl: string): ApiClient {
         body: formData
       });
       return readJson<UploadResponse>(response, "Upload failed");
+    },
+    async downloadMhtml(urls) {
+      const response = await fetch(joinUrl(apiBaseUrl, "/api/download-mhtml"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls })
+      });
+      return readJson<MhtmlDownloadResponse>(response, "MHTML download failed");
     }
   };
 }

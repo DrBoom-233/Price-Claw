@@ -34,6 +34,8 @@ export function useExtractionRunner({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadedFilenames, setUploadedFilenames] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [mhtmlUrls, setMhtmlUrls] = useState<string[]>([""]);
+  const [isDownloadingMhtml, setIsDownloadingMhtml] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [requestText, setRequestText] = useState(DEFAULT_REQUEST);
   const [useLlm, setUseLlm] = useState(false);
@@ -42,6 +44,20 @@ export function useExtractionRunner({
 
   const canStart = settingsConfigured && uploadedFilenames.length > 0 && !isRunning;
   const uploadStatus = uploadedFilenames.length > 0 ? `Uploaded: ${uploadedFilenames.join(", ")}` : "";
+
+  const registerMhtmlFilenames = useCallback((incoming: string[]) => {
+    setUploadedFilenames(incoming);
+
+    setFilePlans((prevPlans) => {
+      const nextPlans = { ...prevPlans };
+      incoming.forEach((filename) => {
+        if (!nextPlans[filename]) {
+          nextPlans[filename] = { schemaId: "", useLlm: false };
+        }
+      });
+      return nextPlans;
+    });
+  }, []);
 
   const handleUpload = useCallback(async () => {
     if (selectedFiles.length === 0) {
@@ -59,17 +75,7 @@ export function useExtractionRunner({
       const data = await api.uploadFile(formData);
       const incoming = Array.isArray(data.filenames) ? data.filenames : data.filename ? [data.filename] : [];
 
-      setUploadedFilenames(incoming);
-
-      setFilePlans((prevPlans) => {
-        const nextPlans = { ...prevPlans };
-        incoming.forEach((filename) => {
-          if (!nextPlans[filename]) {
-            nextPlans[filename] = { schemaId: "", useLlm: false };
-          }
-        });
-        return nextPlans;
-      });
+      registerMhtmlFilenames(incoming);
 
       appendLog(`Upload successful: ${incoming.join(", ")}`, "success");
     } catch (error) {
@@ -77,7 +83,55 @@ export function useExtractionRunner({
     } finally {
       setIsUploading(false);
     }
-  }, [api, appendLog, selectedFiles]);
+  }, [api, appendLog, registerMhtmlFilenames, selectedFiles]);
+
+  const handleMhtmlUrlChange = useCallback((index: number, value: string) => {
+    setMhtmlUrls((prev) => prev.map((url, currentIndex) => (currentIndex === index ? value : url)));
+  }, []);
+
+  const addMhtmlUrlInput = useCallback(() => {
+    setMhtmlUrls((prev) => [...prev, ""]);
+  }, []);
+
+  const removeMhtmlUrlInput = useCallback((index: number) => {
+    setMhtmlUrls((prev) => {
+      if (prev.length <= 1) {
+        return [""];
+      }
+      return prev.filter((_, currentIndex) => currentIndex !== index);
+    });
+  }, []);
+
+  const handleDownloadMhtml = useCallback(async () => {
+    const urls = mhtmlUrls.map((url) => url.trim()).filter(Boolean);
+    if (urls.length === 0) {
+      appendLog("Please enter at least one URL first.", "error");
+      return;
+    }
+
+    setIsDownloadingMhtml(true);
+    appendLog(`Downloading MHTML for ${urls.length} URL(s) ...`);
+    try {
+      const data = await api.downloadMhtml(urls);
+      const incoming = Array.isArray(data.filenames) ? data.filenames : [];
+      const failedFiles = Array.isArray(data.files) ? data.files.filter((file) => !file.success) : [];
+
+      if (incoming.length > 0) {
+        registerMhtmlFilenames(incoming);
+        appendLog(`MHTML download successful: ${incoming.join(", ")}`, "success");
+      } else {
+        appendLog("MHTML download finished with no saved files.", "error");
+      }
+
+      failedFiles.forEach((file) => {
+        appendLog(`MHTML download failed for ${file.url}: ${file.error || "Unknown error"}`, "error");
+      });
+    } catch (error) {
+      appendLog(`MHTML download failed: ${error}`, "error");
+    } finally {
+      setIsDownloadingMhtml(false);
+    }
+  }, [api, appendLog, mhtmlUrls, registerMhtmlFilenames]);
 
   const handleStart = useCallback(() => {
     if (!canStart) {
@@ -173,6 +227,8 @@ export function useExtractionRunner({
       setSelectedFiles,
       uploadedFilenames,
       isUploading,
+      mhtmlUrls,
+      isDownloadingMhtml,
       isRunning,
       requestText,
       setRequestText,
@@ -185,15 +241,25 @@ export function useExtractionRunner({
       canStart,
       uploadStatus,
       handleUpload,
+      handleMhtmlUrlChange,
+      addMhtmlUrlInput,
+      removeMhtmlUrlInput,
+      handleDownloadMhtml,
       handleStart
     }),
     [
+      addMhtmlUrlInput,
       canStart,
       filePlans,
+      handleDownloadMhtml,
+      handleMhtmlUrlChange,
       handleStart,
       handleUpload,
+      isDownloadingMhtml,
       isRunning,
       isUploading,
+      mhtmlUrls,
+      removeMhtmlUrlInput,
       requestText,
       selectedFiles,
       taskMode,

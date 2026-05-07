@@ -91,3 +91,16 @@ export interface UploadResponse {
   filename?: string;
   filenames?: string[];
 }
+
+export interface MhtmlDownloadFile {
+  url: string;
+  filename?: string | null;
+  success: boolean;
+  error?: string;
+}
+
+export interface MhtmlDownloadResponse {
+  filenames?: string[];
+  files?: MhtmlDownloadFile[];
+  message?: string;
+}
