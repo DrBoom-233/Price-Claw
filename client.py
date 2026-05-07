@@ -43,6 +43,7 @@ from pipeline_service import (
     process_product_names,
     process_product_prices,
     run_extraction_with_schema,
+    screenshot_path_for_mhtml,
 )
 from repositories import ExtractionRepository, SchemaRepository, TaskRepository
 
@@ -583,7 +584,7 @@ async def run_pipeline(
         await websocket.send_json(
             {"type": "progress", "step": "Taking screenshots (screenshot_step)"}
         )
-        screenshot_result = await capture_mhtml_screenshots(browser, ctx)
+        screenshot_result = await capture_mhtml_screenshots(browser, ctx, existing_names)
         await websocket.send_json(
             {
                 "type": "step_done",
@@ -592,70 +593,86 @@ async def run_pipeline(
             }
         )
 
-        await websocket.send_json(
-            {
-                "type": "progress",
-                "step": "Processing product names (name_processing_step)",
-            }
-        )
-        name_result = await process_product_names(ctx)
-        await websocket.send_json(
-            {
-                "type": "step_done",
-                "step": "name_processing_step",
-                "data": name_result,
-            }
-        )
+        llm_cache: dict[str, tuple[str | None, str]] = {}
+        resolved_groups: dict[str, dict[str, Any]] = {}
+        plan_items: list[dict[str, Any]] = []
+        plan_errors: list[dict[str, Any]] = []
 
-        if not name_result.get("success", False):
+        def add_plan_error(filename: str, message: str) -> None:
+            plan_errors.append(
+                {
+                    "schemaId": None,
+                    "filenames": [filename],
+                    "result": {
+                        "success": False,
+                        "files_processed": 0,
+                        "total_items": 0,
+                        "results": [
+                            {
+                                "file_name": filename,
+                                "items_count": 0,
+                                "items": [],
+                                "error": message,
+                            }
+                        ],
+                        "error": message,
+                    },
+                }
+            )
+
+        async def prepare_schema_context(filename: str) -> bool:
+            screenshots = screenshot_result.get("screenshots", {})
+            if screenshots.get(filename) is False:
+                add_plan_error(filename, "Screenshot failed for this MHTML file")
+                return False
+
+            screenshot_path = screenshot_path_for_mhtml(filename)
+            if not screenshot_path.exists():
+                add_plan_error(filename, f"Screenshot not found for this MHTML file: {screenshot_path.name}")
+                return False
+
+            target_file_path = MHTML_DIR / filename
+            await websocket.send_json(
+                {
+                    "type": "progress",
+                    "step": "Processing product names (name_processing_step)",
+                    "filename": filename,
+                }
+            )
+            name_result = await process_product_names(ctx, target_file_path, [screenshot_path])
+            await websocket.send_json(
+                {
+                    "type": "step_done",
+                    "step": "name_processing_step",
+                    "filename": filename,
+                    "data": name_result,
+                }
+            )
+
+            if name_result.get("success", False):
+                return True
+
             await websocket.send_json(
                 {
                     "type": "progress",
                     "step": "Fallback: processing product prices (price_processing_step)",
+                    "filename": filename,
                 }
             )
-            price_result = await process_product_prices(ctx)
+            price_result = await process_product_prices(ctx, target_file_path, [screenshot_path])
             await websocket.send_json(
                 {
                     "type": "step_done",
                     "step": "price_processing_step",
+                    "filename": filename,
                     "data": price_result,
                 }
             )
+            if price_result.get("success", False):
+                return True
 
-        baseline_schema_path = ""
-        baseline_selectors: dict[str, Any] = {}
-
-        async def ensure_baseline_schema() -> tuple[str, dict[str, Any]]:
-            nonlocal baseline_schema_path, baseline_selectors
-
-            if baseline_schema_path:
-                return baseline_schema_path, baseline_selectors
-
-            await websocket.send_json(
-                {
-                    "type": "progress",
-                    "step": "Generating extraction schema (schema_generation_step)",
-                }
-            )
-            schema_result = await build_extraction_schema(extraction_request, ctx)
-            await websocket.send_json(
-                {
-                    "type": "step_done",
-                    "step": "schema_generation_step",
-                    "data": schema_result,
-                }
-            )
-            if not schema_result.get("success", False):
-                raise RuntimeError("Failed to generate extraction schema")
-
-            baseline_schema_path = str(schema_result.get("schema_path", ""))
-            baseline_selectors = schema_result.get("selectors_config", {})
-            return baseline_schema_path, baseline_selectors
-
-        llm_cache: dict[str, tuple[str | None, str]] = {}
-        resolved_groups: dict[str, dict[str, Any]] = {}
-        plan_items: list[dict[str, Any]] = []
+            add_plan_error(filename, "OCR/tag locating failed for this MHTML file")
+            return False
 
         if task_mode == "per_file" and file_plans:
             for raw in file_plans:
@@ -691,23 +708,17 @@ async def run_pipeline(
             resolved_schema_path = ""
 
             if schema_id and schema_repo is None:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Schema selection requires MongoDB for file {filename}",
-                    }
-                )
+                message = f"Schema selection requires MongoDB for file {filename}"
+                add_plan_error(filename, message)
+                await websocket.send_json({"type": "error", "message": message})
                 continue
 
             if schema_id and schema_repo is not None:
                 schema_doc = await schema_repo.get_schema_by_id(schema_id)
                 if schema_doc is None:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "message": f"Schema id not found for file {filename}: {schema_id}",
-                        }
-                    )
+                    message = f"Schema id not found for file {filename}: {schema_id}"
+                    add_plan_error(filename, message)
+                    await websocket.send_json({"type": "error", "message": message})
                     continue
                 selectors_config = schema_doc.get("selectors_config", {})
                 resolved_schema_path = _materialize_schema_config(
@@ -728,23 +739,39 @@ async def run_pipeline(
                         )
 
                 if not resolved_schema_path:
-                    if domain in llm_cache:
+                    if not prefer_llm and domain in llm_cache:
                         resolved_schema_id, resolved_schema_path = llm_cache[domain]
                     else:
-                        generated_path, generated_selectors = await ensure_baseline_schema()
+                        if not await prepare_schema_context(filename):
+                            continue
 
-                        if prefer_llm and filename != existing_names[0]:
-                            generated = await build_extraction_schema(extraction_request, ctx)
-                            if not generated.get("success", False):
-                                await websocket.send_json(
-                                    {
-                                        "type": "error",
-                                        "message": f"Failed to generate schema for {filename}",
-                                    }
-                                )
-                                continue
-                            generated_path = str(generated.get("schema_path", ""))
-                            generated_selectors = generated.get("selectors_config", {})
+                        await websocket.send_json(
+                            {
+                                "type": "progress",
+                                "step": "Generating extraction schema (schema_generation_step)",
+                                "filename": filename,
+                            }
+                        )
+                        generated = await build_extraction_schema(
+                            extraction_request,
+                            ctx,
+                            target_file_path,
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "step_done",
+                                "step": "schema_generation_step",
+                                "filename": filename,
+                                "data": generated,
+                            }
+                        )
+                        if not generated.get("success", False):
+                            message = f"Failed to generate schema for {filename}"
+                            add_plan_error(filename, message)
+                            await websocket.send_json({"type": "error", "message": message})
+                            continue
+                        generated_path = str(generated.get("schema_path", ""))
+                        generated_selectors = generated.get("selectors_config", {})
 
                         if schema_repo is not None and generated_selectors:
                             created = await schema_repo.create_schema(
@@ -757,7 +784,8 @@ async def run_pipeline(
                             resolved_schema_id = created.get("id")
 
                         resolved_schema_path = generated_path
-                        llm_cache[domain] = (resolved_schema_id, resolved_schema_path)
+                        if not prefer_llm:
+                            llm_cache[domain] = (resolved_schema_id, resolved_schema_path)
 
             if not resolved_schema_path:
                 continue
@@ -772,14 +800,30 @@ async def run_pipeline(
             group["filenames"].append(filename)
 
         if not resolved_groups:
-            await websocket.send_json(
-                {"type": "fatal", "message": "No valid extraction plan generated"}
-            )
+            final_result = {
+                "taskId": task_id,
+                "groups": plan_errors,
+                "filesProcessed": 0,
+                "totalItems": 0,
+                "errors": [
+                    item.get("result", {}).get("error", "Unknown error")
+                    for item in plan_errors
+                ],
+            }
             if task_repo is not None:
                 await task_repo.set_status(task_id=task_id, status="failed", error="No valid extraction plan generated")
+            await websocket.send_json(
+                {
+                    "type": "step_done",
+                    "step": "execute_extraction_step",
+                    "data": final_result,
+                }
+            )
+            await websocket.send_json({"type": "result", "data": final_result})
+            await websocket.send_json({"type": "complete", "taskId": task_id})
             return
 
-        execution_results: list[dict[str, Any]] = []
+        execution_results: list[dict[str, Any]] = [*plan_errors]
         for schema_path, group in resolved_groups.items():
             await websocket.send_json(
                 {

@@ -49,10 +49,14 @@ def setup_tesseract() -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Tesseract OCR not found: {e}"
 
-def get_image_files() -> List[Path]:
+def get_image_files(image_paths: Optional[List[Union[str, Path]]] = None) -> List[Path]:
     """
-    Get all image files in the public directory
+    Get image files for OCR. If image_paths is provided, only existing files
+    from that list are returned; otherwise all images in public are returned.
     """
+    if image_paths is not None:
+        return [Path(path) for path in image_paths if Path(path).exists()]
+
     if not PUBLIC_DIR.exists():
         PUBLIC_DIR.mkdir(exist_ok=True)
     
@@ -87,6 +91,48 @@ def extract_text_from_image(image_path: Path) -> str:
     image = Image.open(image_path)
     return pytesseract.image_to_string(image, lang='eng')
 
+def _parse_json_response(response_text: str) -> Any:
+    cleaned_response = re.sub(r'```json|```', '', response_text).strip()
+    return json.loads(cleaned_response)
+
+def _flatten_entries(
+    value: Any,
+    field_aliases: Dict[str, str],
+    wrapper_keys: set[str],
+) -> List[Dict[str, str]]:
+    entries: List[Dict[str, str]] = []
+
+    if isinstance(value, list):
+        for item in value:
+            entries.extend(_flatten_entries(item, field_aliases, wrapper_keys))
+        return entries
+
+    if not isinstance(value, dict):
+        return entries
+
+    for key in wrapper_keys:
+        nested = value.get(key)
+        if isinstance(nested, (list, dict)):
+            entries.extend(_flatten_entries(nested, field_aliases, wrapper_keys))
+
+    normalized: Dict[str, str] = {}
+    for key, raw_value in value.items():
+        normalized_key = str(key).lower()
+        if normalized_key in wrapper_keys and isinstance(raw_value, (list, dict)):
+            continue
+        target_key = field_aliases.get(normalized_key)
+        if target_key and raw_value not in (None, ""):
+            normalized[target_key] = str(raw_value)
+
+    if "order" not in normalized and value.get("order") not in (None, ""):
+        normalized["order"] = str(value["order"])
+
+    required_fields = {"item", "price"} & set(field_aliases.values())
+    if normalized and any(field in normalized for field in required_fields):
+        entries.append(normalized)
+
+    return entries
+
 def extract_name_info(text: str, client, model: str | None = None) -> List[Dict[str, str]]:
     """
     Extract product name information from text
@@ -101,19 +147,27 @@ def extract_name_info(text: str, client, model: str | None = None) -> List[Dict[
                         "In some cases, you might receive some information about the housing rental information,"
                         "you should list the treat the address information as item name."
                         "Do not put any price info into json, that's not your job!"
-                        "json format should be like{order:, item: }"}
+                        "Return only a JSON array. Each object must be exactly like {\"order\": \"1\", \"item\": \"item name\"}."}
         ]
     )
-    cleaned_response = re.sub(r'```json|```', '', name_response).strip()
-    
+
     try:
-        extracted_info = json.loads(cleaned_response)
-        if isinstance(extracted_info, list):
-            return extracted_info
-        elif isinstance(extracted_info, dict):
-            return [extracted_info]
-        else:
-            return []
+        extracted_info = _parse_json_response(name_response)
+        return _flatten_entries(
+            extracted_info,
+            {
+                "order": "order",
+                "item": "item",
+                "items": "item",
+                "name": "item",
+                "names": "item",
+                "title": "item",
+                "product": "item",
+                "product_name": "item",
+                "productname": "item",
+            },
+            {"items", "products", "names", "results", "data"},
+        )
     except json.JSONDecodeError:
         return []
 
@@ -129,19 +183,24 @@ def extract_price_info(text: str, client, model: str | None = None) -> List[Dict
              "content": "Summarize the price information from the text above. "
                         "List all prices and its orders in format. "
                         "Do not put any product name info into json, that's not your job!"
-                        "json format should be like{order:, price: }"}
+                        "Return only a JSON array. Each object must be exactly like {\"order\": \"1\", \"price\": \"$1.00\"}."}
         ]
     )
-    cleaned_response = re.sub(r'```json|```', '', price_response).strip()
-    
+
     try:
-        extracted_info = json.loads(cleaned_response)
-        if isinstance(extracted_info, list):
-            return extracted_info
-        elif isinstance(extracted_info, dict):
-            return [extracted_info]
-        else:
-            return []
+        extracted_info = _parse_json_response(price_response)
+        return _flatten_entries(
+            extracted_info,
+            {
+                "order": "order",
+                "price": "price",
+                "prices": "price",
+                "amount": "price",
+                "cost": "price",
+                "value": "price",
+            },
+            {"prices", "items", "products", "results", "data"},
+        )
     except json.JSONDecodeError:
         return []
 
@@ -156,7 +215,11 @@ def save_json_data(data: List[Dict[str, Any]], file_path: Path) -> bool:
     except Exception:
         return False
 
-async def process_ocr_name(ctx, service_type: str | None = None) -> bool:
+async def process_ocr_name(
+    ctx,
+    service_type: str | None = None,
+    image_paths: Optional[List[Union[str, Path]]] = None,
+) -> bool:
     """
     Process the OCR extraction workflow for product names
     
@@ -189,7 +252,7 @@ async def process_ocr_name(ctx, service_type: str | None = None) -> bool:
         return False
     
     # Get image files
-    image_files = get_image_files()
+    image_files = get_image_files(image_paths)
     await ctx.info(f"Found {len(image_files)} image files")
     
     if not image_files:
@@ -243,7 +306,11 @@ async def process_ocr_name(ctx, service_type: str | None = None) -> bool:
         await ctx.warning("No name information extracted")
         return False
 
-async def process_ocr_price(ctx, service_type: str | None = None) -> bool:
+async def process_ocr_price(
+    ctx,
+    service_type: str | None = None,
+    image_paths: Optional[List[Union[str, Path]]] = None,
+) -> bool:
     """
     Process the OCR extraction workflow for product prices
     
@@ -276,7 +343,7 @@ async def process_ocr_price(ctx, service_type: str | None = None) -> bool:
         return False
     
     # Get image files
-    image_files = get_image_files()
+    image_files = get_image_files(image_paths)
     await ctx.info(f"Found {len(image_files)} image files")
     
     if not image_files:

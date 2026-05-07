@@ -112,7 +112,13 @@ class ExtractionExecutor:
             raise FileNotFoundError(error_msg)
             
         if include_filenames:
-            requested = {name.strip() for name in include_filenames if name and name.strip()}
+            requested = []
+            seen = set()
+            for name in include_filenames:
+                clean_name = name.strip() if name else ""
+                if clean_name and clean_name not in seen:
+                    requested.append(clean_name)
+                    seen.add(clean_name)
             mhtml_files = [dir_path / name for name in requested]
             missing_files = [file.name for file in mhtml_files if not file.exists()]
             if missing_files:

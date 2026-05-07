@@ -369,7 +369,11 @@ class CssSelectorGenerator:
         
         return results
 
-async def process_natural_language_request(natural_language_request: str, html_content: Optional[str] = None) -> Dict[str, Any]:
+async def process_natural_language_request(
+    natural_language_request: str,
+    html_content: Optional[str] = None,
+    schema_base_filename: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     处理自然语言提取请求
     
@@ -392,7 +396,7 @@ async def process_natural_language_request(natural_language_request: str, html_c
         
         # 从mhtml_output目录中获取最新的mhtml文件名
         mhtml_dir = project_root / "mhtml_output"
-        mhtml_files = list(glob.glob(str(mhtml_dir / "*.mhtml")))
+        mhtml_files = [] if schema_base_filename else list(glob.glob(str(mhtml_dir / "*.mhtml")))
         
         if mhtml_files:
             # 按修改时间排序，获取最新的文件
@@ -422,6 +426,9 @@ async def process_natural_language_request(natural_language_request: str, html_c
             logger.info(f"未找到mhtml文件，使用生成的命名格式: {base_filename}")
         
         # 保存CSS选择器配置到extraction_schemas目录
+        if schema_base_filename:
+            base_filename = schema_base_filename
+
         schema_filename = f"{base_filename}.json"
         schema_path = SCHEMAS_DIR / schema_filename
         with open(schema_path, 'w', encoding='utf-8') as f:
